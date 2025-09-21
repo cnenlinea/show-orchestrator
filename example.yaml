@@ -1,0 +1,51 @@
+audio_tracks:
+  - name: "Offset (no audio) track
+    duration: "4:02"
+    events:
+      lights:
+        - timestamp: "0:00"
+          effect_id: "blackout_light"
+        - timestamp: "0:20"
+          effect_id: "fade_in"
+        - timestamp: "1:00"
+          effect_id: "strobe"
+          duration: 30
+      projection:
+        - timestamp: "0:00"
+          effect_id: "blackout_projection"
+        - timestamp: "0:20"
+          effect_id: "acapella_background"
+  - name: "Track with audio"
+    duration: "0:01"
+    file_path: "shows/media/example.wav"
+    events:
+      lights:
+        - timestamp: "0:00"
+          effect_id: "blackout_light"
+      projection:
+        - timestamp: "0:00"
+          effect_id: "blackout_projection"
+effects:
+  lights:
+    - id: "blackout_light"
+      name: "Blackout (All Lights Off)"
+      note: 1
+      channel: 0
+    - id: "fade_in"
+      name: "Fade In (All Lights On)"
+      note: 2
+      channel: 0
+    - id: "strobe"
+      name: "Strobe Effect"
+      note: 3
+      channel: 0
+    - id: "spotlight"
+      name: "Spotlight Center Stage"
+      channel: 0
+  projection:
+    - id: "blackout_projection"
+      name: "Set Projections to Black"
+      channel: 1
+    - id: "acapella_background"
+      name: "Acapella Background Visuals"
+      channel: 1
