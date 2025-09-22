@@ -22,7 +22,7 @@ class NoteMapper:
 
     def load_show(self, file_path: str) -> Show:
         parser = Parser()
-        self.show = parser.load_show_from_yaml(file_path)
+        self.show = parser.load_show(file_path)
         return self.show
 
     def _map_show_effects_to_notes(self) -> dict[str, int]:
@@ -33,21 +33,21 @@ class NoteMapper:
         for effect_type, effect_list in self.show.effects.items():
             for effect in effect_list:
                 note = effect.note
-                channel = effect.channel if effect.channel is not None else self.default_channel
+                if effect.channel is None:
+                    effect.channel = self.default_channel
                 if note is None:
                     effects_without_note[effect_type].append(effect)
                     continue
-                used_notes_per_channel[channel].add(note)
+                used_notes_per_channel[effect.channel].add(note)
                 self.effect_mapping[effect_type][effect.id] = effect
         for effect_type, effect_list in effects_without_note.items():
             for effect in effect_list:
                 note = 0
-                channel = effect.channel if effect.channel is not None else self.default_channel
-                used_notes = used_notes_per_channel[channel]
+                used_notes = used_notes_per_channel[effect.channel]
                 while note in used_notes:
                     note += 1
                 effect.note = note
-                used_notes_per_channel[channel].add(note)
+                used_notes_per_channel[effect.channel].add(note)
                 self.effect_mapping[effect_type][effect.id] = effect
         return self.effect_mapping
 
@@ -88,12 +88,12 @@ if __name__ == "__main__":
         formatter_class=argparse.RawTextHelpFormatter
     )
     arg_parser.add_argument(
-        "yaml_file",
+        "file",
         type=Path,
-        help="Path to the show definition YAML file."
+        help="Path to the show definition YAML/CSV file."
     )
     args = arg_parser.parse_args()
     root = tkinter.Tk()
     app = NoteMapper(root)
-    app.show = app.load_show(args.yaml_file)
+    app.show = app.load_show(args.file)
     app.run()

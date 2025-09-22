@@ -32,6 +32,10 @@ class Event(BaseModel):
     @classmethod
     def validate_duration(cls, value: float | str | None) -> float | str | None:
         if isinstance(value, str) and not re.match(r"^\d{1,2}:\d{2}(\.\d+)?$", value):
+            try:
+                return float(value)
+            except:
+                raise ValueError("Duration must be a valid number")
             raise ValueError("Duration must be in the format 'MM:SS' or 'MM:SS.sss'")
         if isinstance(value, (int, float)) and value < 0:
             raise ValueError("Duration must be non-negative")
@@ -63,6 +67,10 @@ class AudioTrack(BaseModel):
     @classmethod
     def validate_duration(cls, value: float | str) -> float | str:
         if isinstance(value, str) and not re.match(r"^\d{1,2}:\d{2}(\.\d+)?$", value):
+            try:
+                return float(value)
+            except:
+                raise ValueError("Duration must be a valid number")
             raise ValueError("Duration must be in the format 'MM:SS' or 'MM:SS.sss'")
         if isinstance(value, (int, float)) and value < 0:
             raise ValueError("Duration must be non-negative")

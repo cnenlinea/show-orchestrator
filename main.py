@@ -12,14 +12,14 @@ AVAILABLE_BACKENDS = {
 
 def main():
     arg_parser = argparse.ArgumentParser(
-        description="Generate MIDI files and show projects from a YAML definition.",
+        description="Generate MIDI files and show projects from a YAML/CSV definition.",
         formatter_class=argparse.RawTextHelpFormatter
     )
 
     arg_parser.add_argument(
-        "yaml_file",
+        "file",
         type=Path,
-        help="Path to the show definition YAML file."
+        help="Path to the show definition YAML/CSV file."
     )
 
     arg_parser.add_argument(
@@ -42,9 +42,9 @@ def main():
     args = arg_parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
         
-    yaml_file: Path = args.yaml_file
-    yaml_parser = Parser()
-    show_data = yaml_parser.load_show_from_yaml(yaml_file)
+    file: Path = args.file
+    parser = Parser()
+    show_data = parser.load_show(file)
 
     midi_generator = MidiGenerator()
     midi_file_paths = midi_generator.generate_midi_files(show_data, args.output_dir)
@@ -53,7 +53,7 @@ def main():
     orchestrator = AVAILABLE_BACKENDS[backend_name]()
     
     orchestrator.create_project(show_data, midi_file_paths, args.output_dir)
-    orchestrator.save_project(args.output_dir / f"{yaml_file.stem}.rpp")
+    orchestrator.save_project(args.output_dir / f"{file.stem}.rpp")
 
 if __name__ == "__main__":
     main()
