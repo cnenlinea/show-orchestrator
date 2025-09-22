@@ -1,0 +1,11 @@
+name,type,timestamp,duration,file
+Acapella,audio,,1:02,
+Blackout Luz,lights,0:00,,
+Blackout Proyección,projection,0:00,,
+Fade In,lights,0:05,,
+Fondo Acapella,projection,0:05,,
+Strobe,lights,0:30,30,
+Intro,audio,,2:01,shows/media/00 - Intro.mp3
+Blackout Luz,lights,0:00,,
+Blackout Proyección,projection,0:00,,
+Luz Intro,lights,0:02,,
