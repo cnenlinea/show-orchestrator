@@ -1,5 +1,7 @@
 import argparse
 import tkinter
+import tkinter.messagebox
+from tkinter import ttk
 from collections import defaultdict
 from pathlib import Path
 
@@ -19,6 +21,10 @@ class NoteMapper:
         self.root.title("Note Mapper")
         self.label = tkinter.Label(root, text="Note Mapper Tool")
         self.label.pack(pady=20)
+        self.available_ports = mido.get_output_names() or ["N/A"]
+        self.midi_port_dropdown = ttk.Combobox(root, values=self.available_ports)
+        self.midi_port_dropdown.set(self.available_ports[0])
+        self.midi_port_dropdown.pack()
 
     def load_show(self, file_path: str) -> Show:
         parser = Parser()
@@ -74,10 +80,13 @@ class NoteMapper:
         self.root.mainloop()
 
     def _play_midi_note(self, note: int, channel: int) -> None:
-        msg_on = mido.Message('note_on', note=note, velocity=64, channel=channel)
-        msg_off = mido.Message('note_off', note=note, velocity=64, channel=channel)
-        with mido.open_output() as port:
-            print(f"Playing note {note} on channel {channel}")
+        current_port = self.midi_port_dropdown.get()
+        if current_port == "N/A":
+            tkinter.messagebox.showwarning(title="No MIDI port", message="No MIDI port available for operation")
+            return
+        msg_on = mido.Message('note_on', note=note, velocity=127, channel=channel, time=0)
+        msg_off = mido.Message('note_off', note=note, velocity=127, channel=channel, time=0)
+        with mido.open_output(current_port) as port:
             port.send(msg_on)
             port.send(msg_off)
 
