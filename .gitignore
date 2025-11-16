@@ -64,7 +64,4 @@ venv.bak/
 .pypirc
 
 # Project specific files
-shows/media/*
-shows/*.yaml
-shows/*.yml
-shows/*.csv
+shows/**

@@ -25,7 +25,7 @@ class Parser:
         return self.show
 
     def load_show_from_csv(self, file_path: Path) -> Show:
-        field_names = ["name", "type", "timestamp", "duration", "file"]
+        field_names = ["name", "type", "timestamp", "duration", "note", "file"]
         self.show = Show(
             audio_tracks = [],
             effects = {
@@ -60,7 +60,8 @@ class Parser:
                     if row["name"] not in effects_by_id:
                         effect = Effect(
                             id = row["name"],
-                            name = row["name"]
+                            name = row["name"],
+                            note = int(row.get("note")) if row.get("note") else None,
                         )
                         self.show.effects[row["type"]].append(effect)
                     
