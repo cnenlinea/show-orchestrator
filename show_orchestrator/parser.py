@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from show_orchestrator.models import Show, AudioTrack, Effect, Event
+from show_orchestrator.models import Show, AudioTrack, Effect, Event, ExtraAudioTrack
 
 
 class Parser:
@@ -40,7 +40,7 @@ class Parser:
                 for key in row:
                     if row[key] == "":
                         row[key] = None
-                if row["type"] not in ["audio", "lights", "projection"]:
+                if row["type"] not in ["audio", "lights", "projection", "extra track"]:
                     continue
                 elif row["type"] == "audio":
                     last_audio_track = AudioTrack(
@@ -53,6 +53,18 @@ class Parser:
                         file_path = row["file"]
                     )
                     self.show.audio_tracks.append(last_audio_track)
+                elif row["type"] == "extra track":
+                    if last_audio_track is None:
+                        continue
+                    extra_track = ExtraAudioTrack(
+                        name = row["name"],
+                        duration = row["duration"],
+                        timestamp = row["timestamp"],
+                        file_path = row["file"]
+                    )
+                    if last_audio_track.extra_tracks is None:
+                        last_audio_track.extra_tracks = []
+                    last_audio_track.extra_tracks.append(extra_track)
                 else:
                     if last_audio_track is None:
                         continue
