@@ -30,7 +30,8 @@ class Parser:
             audio_tracks = [],
             effects = {
                 "lights": [],
-                "projection": []
+                "projection": [],
+                "homeassistant": []
             }
         )
         effects_by_id = {}
@@ -40,14 +41,15 @@ class Parser:
                 for key in row:
                     if row[key] == "":
                         row[key] = None
-                if row["type"] not in ["audio", "lights", "projection", "extra track"]:
+                if row["type"] not in ["audio", "lights", "projection", "extra track", "homeassistant"]:
                     continue
                 elif row["type"] == "audio":
                     last_audio_track = AudioTrack(
                         name = row["name"],
                         events = {
                             "lights": [],
-                            "projection": []
+                            "projection": [],
+                            "homeassistant": []
                         },
                         duration = row["duration"],
                         file_path = row["file"]

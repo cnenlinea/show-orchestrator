@@ -7,6 +7,7 @@ from pydantic import BaseModel, field_validator
 class EffectType(StrEnum):
     LIGHTS = "lights"
     PROJECTION = "projection"
+    HOMEASSISTANT = "homeassistant"
 
 
 class MidiEvent(BaseModel):

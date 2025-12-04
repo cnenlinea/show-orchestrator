@@ -82,6 +82,8 @@ class MidiGenerator:
                 midi_events.sort(key=lambda e: e.timestamp)
 
                 current_time = 0
+                if not midi_events:
+                    continue
                 for event in midi_events:
                     delta_time = event.timestamp - current_time
                     midi_time = mido.second2tick(delta_time, mid.ticks_per_beat, tempo=self.tempo)
