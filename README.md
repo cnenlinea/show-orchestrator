@@ -46,6 +46,17 @@ python main.py shows/castillo/castillo_afuera_a.csv -o build --orchestrate reape
 
 This writes `build/<show>.rpp`, one `.mid` per song and effect type, and copies the referenced audio media next to them. Open the `.rpp` in REAPER.
 
+Each generated `.mid` carries standard MIDI meta events: a track name, and a marker naming the effect at every cue — so REAPER's piano roll shows *"Blackout Luz"* rather than an anonymous note 2.
+
+| Option | Purpose |
+| --- | --- |
+| `-o`, `--output-dir` | Where to write MIDI, media and the project file (default `./build/`) |
+| `--orchestrate BACKEND` | Also build a project file; omit to generate MIDI only |
+| `--velocity N` | Velocity of generated `note_on` messages (default 127) |
+| `--no-note-lock` | Ignore the note lock file — see below |
+
+Cues fire at velocity **127** by default. QLC+ scales note velocity into the input value, so a lower velocity arrives as a partial level rather than a clean trigger; change it with `--velocity` only if your receivers want that.
+
 ### Note mapper GUI
 
 ```console
@@ -99,9 +110,31 @@ effects:
 
 YAML gives you more control than CSV: effects are declared in a catalog with explicit `note`/`channel`, so lights and projection can live on separate MIDI channels. See [example.yaml](example.yaml).
 
-### Note auto-assignment
+### Note auto-assignment and the note lock
 
-Effects without a `note` get the lowest MIDI note not already used on their channel (effects without a `channel` default to 0). Assignment is deterministic for a given file, but adding or reordering effects can shift auto-assigned notes — pin notes explicitly (CSV `note` column / YAML `note` field) once your MadMapper/QLC+ mappings are set up.
+Effects without a `note` get the lowest MIDI note not already used on their channel (effects without a `channel` default to 0).
+
+On its own that is fragile: adding one effect could renumber every effect after it, while your MadMapper and QLC+ mappings keep pointing at the old notes. So every assignment is recorded in a **`<show>.notes.lock`** file next to the show definition — `shows/castillo/castillo_afuera_a.notes.lock` for the example above — and reused on the next run.
+
+```json
+{
+  "version": 1,
+  "effects": {
+    "projection": {
+      "Full Blackout": { "note": 1, "channel": 0 }
+    }
+  }
+}
+```
+
+Commit this file. The rules are:
+
+- A `note` pinned in the show definition always wins, and updates the lock.
+- An effect that already has a locked note keeps it, wherever it moves in the file.
+- Notes belonging to deleted effects stay reserved, so a new effect never inherits a note your rig still has mapped — and re-adding the effect gets its original note back.
+- Only genuinely new effects draw a fresh note.
+
+Deleting the lock re-assigns everything from scratch; `--no-note-lock` skips it entirely.
 
 ## REAPER / show workflow
 
@@ -118,7 +151,7 @@ note_mapper.py               Tk GUI to inspect/audition effect notes
 show_orchestrator/
   parser.py                  YAML/CSV → Show
   models.py                  pydantic models + MM:SS helpers
-  notes.py                   note/channel auto-assignment
+  notes.py                   note/channel assignment + notes.lock
   generator.py               Show → .mid files (mido)
   backends/reaper.py         Show + .mid files → .rpp (reathon)
 tests/                       pytest suite

@@ -71,3 +71,7 @@ Scripts/
 
 # Project specific files
 shows/**
+# ...but note locks must be versioned, or auto-assigned notes drift between machines
+!shows/
+!shows/*/
+!shows/**/*.notes.lock
