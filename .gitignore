@@ -63,5 +63,11 @@ venv.bak/
 # PyPI configuration file
 .pypirc
 
+# Root-level venv (python -m venv .)
+pyvenv.cfg
+Include/
+Lib/
+Scripts/
+
 # Project specific files
 shows/**

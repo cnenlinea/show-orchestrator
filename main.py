@@ -49,9 +49,11 @@ def main():
     midi_generator = MidiGenerator()
     midi_file_paths = midi_generator.generate_midi_files(show_data, args.output_dir)
 
-    backend_name = args.orchestrate
-    orchestrator = AVAILABLE_BACKENDS[backend_name]()
-    
+    if args.orchestrate is None:
+        print(f"MIDI files written to {args.output_dir}. Pass --orchestrate to also build a project file.")
+        return
+
+    orchestrator = AVAILABLE_BACKENDS[args.orchestrate]()
     orchestrator.create_project(show_data, midi_file_paths, args.output_dir)
     orchestrator.save_project(args.output_dir / f"{file.stem}.rpp")
 

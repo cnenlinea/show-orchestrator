@@ -2,13 +2,13 @@ import argparse
 import tkinter
 import tkinter.messagebox
 from tkinter import ttk
-from collections import defaultdict
 from pathlib import Path
 
 import mido
 
 from show_orchestrator.parser import Parser
 from show_orchestrator.models import Show
+from show_orchestrator.notes import assign_missing_notes
 
 
 class NoteMapper:
@@ -17,7 +17,7 @@ class NoteMapper:
         self.root = root
         self.show = None
         self.default_channel = 0
-        self.effect_mapping = defaultdict(dict)
+        self.effect_mapping = {}
         self.root.geometry("500x400")
         self.root.rowconfigure(2, weight=1)
         self.root.columnconfigure(0, weight=1)
@@ -29,39 +29,14 @@ class NoteMapper:
         self.midi_port_dropdown.set(self.available_ports[0])
         self.midi_port_dropdown.grid(row=1, column=0, pady=5)
 
-    def load_show(self, file_path: str) -> Show:
+    def load_show(self, file_path: Path) -> Show:
         parser = Parser()
         self.show = parser.load_show(file_path)
         return self.show
 
-    def _map_show_effects_to_notes(self) -> dict[str, int]:
-        if not self.show:
-            return
-        effects_without_note = defaultdict(list)
-        used_notes_per_channel = defaultdict(set)
-        for effect_type, effect_list in self.show.effects.items():
-            for effect in effect_list:
-                note = effect.note
-                if effect.channel is None:
-                    effect.channel = self.default_channel
-                if note is None:
-                    effects_without_note[effect_type].append(effect)
-                    continue
-                used_notes_per_channel[effect.channel].add(note)
-                self.effect_mapping[effect_type][effect.id] = effect
-        for effect_type, effect_list in effects_without_note.items():
-            for effect in effect_list:
-                note = 0
-                used_notes = used_notes_per_channel[effect.channel]
-                while note in used_notes:
-                    note += 1
-                effect.note = note
-                used_notes_per_channel[effect.channel].add(note)
-                self.effect_mapping[effect_type][effect.id] = effect
-        return self.effect_mapping
-
     def run(self) -> None:
-        self._map_show_effects_to_notes()
+        if self.show:
+            self.effect_mapping = assign_missing_notes(self.show.effects, self.default_channel)
         container = tkinter.Frame(self.root)
         container.grid(row=2, column=0, pady=10, padx=10, sticky="nsew")
         container.rowconfigure(0, weight=1)

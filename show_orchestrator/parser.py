@@ -35,6 +35,7 @@ class Parser:
             }
         )
         effects_by_id = {}
+        last_audio_track = None
         with open(file_path, 'r', encoding='utf-8') as file:
             reader = DictReader(file, field_names)
             for row in reader:
@@ -57,7 +58,9 @@ class Parser:
                     self.show.audio_tracks.append(last_audio_track)
                 elif row["type"] == "extra track":
                     if last_audio_track is None:
-                        continue
+                        raise ValueError(
+                            f"Row '{row['name']}' has type '{row['type']}' but appears before any audio row"
+                        )
                     extra_track = ExtraAudioTrack(
                         name = row["name"],
                         duration = row["duration"],
@@ -69,15 +72,26 @@ class Parser:
                     last_audio_track.extra_tracks.append(extra_track)
                 else:
                     if last_audio_track is None:
-                        continue
+                        raise ValueError(
+                            f"Row '{row['name']}' has type '{row['type']}' but appears before any audio row"
+                        )
 
                     if row["name"] not in effects_by_id:
+                        note = None
+                        if row["note"] is not None:
+                            try:
+                                note = int(row["note"])
+                            except ValueError:
+                                raise ValueError(
+                                    f"Row '{row['name']}' has an invalid MIDI note: {row['note']!r}"
+                                )
                         effect = Effect(
                             id = row["name"],
                             name = row["name"],
-                            note = int(row.get("note")) if row.get("note") else None,
+                            note = note,
                         )
                         self.show.effects[row["type"]].append(effect)
+                        effects_by_id[row["name"]] = effect
                     
                     last_audio_track.events[row["type"]].append(
                         Event(

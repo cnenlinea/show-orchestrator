@@ -1,5 +1,5 @@
 audio_tracks:
-  - name: "Offset (no audio) track
+  - name: "Offset (no audio) track"
     duration: "4:02"
     events:
       lights:
