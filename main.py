@@ -2,7 +2,8 @@ import argparse
 from pathlib import Path
 
 from show_orchestrator.parser import Parser
-from show_orchestrator.generator import MidiGenerator
+from show_orchestrator.generator import DEFAULT_VELOCITY, MidiGenerator
+from show_orchestrator.notes import lock_path_for
 from show_orchestrator.backends.reaper import ReaperBackend
 
 AVAILABLE_BACKENDS = {
@@ -39,15 +40,32 @@ def main():
         )
     )
 
+    arg_parser.add_argument(
+        "--velocity",
+        type=int,
+        default=DEFAULT_VELOCITY,
+        help=f"Velocity of the generated note_on messages (default: {DEFAULT_VELOCITY})"
+    )
+
+    arg_parser.add_argument(
+        "--no-note-lock",
+        action="store_true",
+        help=(
+            "Do not read or write the <show>.notes.lock file.\n"
+            "Auto-assigned notes may then change when effects are added or removed."
+        )
+    )
+
     args = arg_parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
     file: Path = args.file
     parser = Parser()
     show_data = parser.load_show(file)
 
-    midi_generator = MidiGenerator()
-    midi_file_paths = midi_generator.generate_midi_files(show_data, args.output_dir)
+    lock_path = None if args.no_note_lock else lock_path_for(file)
+    midi_generator = MidiGenerator(velocity=args.velocity)
+    midi_file_paths = midi_generator.generate_midi_files(show_data, args.output_dir, lock_path)
 
     if args.orchestrate is None:
         print(f"MIDI files written to {args.output_dir}. Pass --orchestrate to also build a project file.")

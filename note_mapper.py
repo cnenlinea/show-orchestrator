@@ -7,8 +7,9 @@ from pathlib import Path
 import mido
 
 from show_orchestrator.parser import Parser
+from show_orchestrator.generator import DEFAULT_VELOCITY
 from show_orchestrator.models import Show
-from show_orchestrator.notes import assign_missing_notes
+from show_orchestrator.notes import assign_missing_notes, lock_path_for
 
 
 class NoteMapper:
@@ -16,6 +17,7 @@ class NoteMapper:
     def __init__(self, root: tkinter.Tk) -> None:
         self.root = root
         self.show = None
+        self.show_file = None
         self.default_channel = 0
         self.effect_mapping = {}
         self.root.geometry("500x400")
@@ -32,11 +34,15 @@ class NoteMapper:
     def load_show(self, file_path: Path) -> Show:
         parser = Parser()
         self.show = parser.load_show(file_path)
+        self.show_file = file_path
         return self.show
 
     def run(self) -> None:
         if self.show:
-            self.effect_mapping = assign_missing_notes(self.show.effects, self.default_channel)
+            lock_path = lock_path_for(self.show_file) if self.show_file else None
+            self.effect_mapping = assign_missing_notes(
+                self.show.effects, self.default_channel, lock_path
+            )
         container = tkinter.Frame(self.root)
         container.grid(row=2, column=0, pady=10, padx=10, sticky="nsew")
         container.rowconfigure(0, weight=1)
@@ -76,8 +82,8 @@ class NoteMapper:
         if current_port == "N/A":
             tkinter.messagebox.showwarning(title="No MIDI port", message="No MIDI port available for operation")
             return
-        msg_on = mido.Message('note_on', note=note, velocity=127, channel=channel, time=0)
-        msg_off = mido.Message('note_off', note=note, velocity=127, channel=channel, time=0)
+        msg_on = mido.Message('note_on', note=note, velocity=DEFAULT_VELOCITY, channel=channel, time=0)
+        msg_off = mido.Message('note_off', note=note, velocity=0, channel=channel, time=0)
         with mido.open_output(current_port) as port:
             port.send(msg_on)
             port.send(msg_off)

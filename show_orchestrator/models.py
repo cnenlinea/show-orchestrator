@@ -49,6 +49,7 @@ class MidiEvent(BaseModel):
     message: str
     channel: int
     note: int
+    label: str | None = None
 
 
 class Event(BaseModel):
