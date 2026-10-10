@@ -57,6 +57,23 @@ Each generated `.mid` carries standard MIDI meta events: a track name, and a mar
 
 Cues fire at velocity **127** by default. QLC+ scales note velocity into the input value, so a lower velocity arrives as a partial level rather than a clean trigger; change it with `--velocity` only if your receivers want that.
 
+### Web UI
+
+```console
+python web.py
+```
+
+Then open <http://127.0.0.1:5000>. Run it from the project root, like `main.py`. Pick a show definition (any `.csv`/`.yaml` in the root or under `shows/`) to see each song's cues on a timeline and every effect with its MIDI note and channel. Choose a MIDI output port and press **▶** (or click a cue) to audition a note, and use **Build** to write the MIDI files and REAPER project with the same options as the CLI. `--host` and `--port` change where it listens.
+
+The **Edit** tab is a graphical editor for the selected show, the same for CSV and YAML files:
+
+- Each song is a card with its name, length and audio file, a list of its cues and extra tracks, and buttons to add rows, sort them by time, and reorder or delete songs.
+- A cue is a time, an optional hold, a type and an effect picked from a list; **＋ New effect…** in that list creates one.
+- The lanes above each list show the song as you edit it: drag a cue to move it (hold Shift for tenths of a second), or double-click a lane to add a cue there.
+- **Effects** at the top lists every effect. Renaming one renames it in all its cues, and a note (and, for YAML, a channel) can be pinned or left automatic.
+
+Fields that are missing or malformed are outlined in red, and saving (button or Ctrl+S) is refused if the result would not load, so the editor can't leave you with a broken show. Saving rewrites the file: a CSV keeps its header and row order, while a YAML file loses any comments and hand formatting. The **Source** tab still edits the file as text, with the same check on save.
+
 ### Note mapper GUI
 
 ```console
@@ -148,10 +165,13 @@ Deleting the lock re-assigns everything from scratch; `--no-note-lock` skips it 
 ```
 main.py                      CLI entry point
 note_mapper.py               Tk GUI to inspect/audition effect notes
+web.py                       Flask web UI: timeline, editor, note audition, build
+templates/index.html         the web UI's single page
 show_orchestrator/
   parser.py                  YAML/CSV → Show
   models.py                  pydantic models + MM:SS helpers
   notes.py                   note/channel assignment + notes.lock
+  editor.py                  show file ⇄ the document the web editor works on
   generator.py               Show → .mid files (mido)
   backends/reaper.py         Show + .mid files → .rpp (reathon)
 tests/                       pytest suite

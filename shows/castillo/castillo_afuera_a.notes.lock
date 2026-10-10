@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "effects": {
+    "projection": {
+      "Abismo de Piedra Abrir Puerta": {
+        "note": 16,
+        "channel": 0
+      },
+      "Abismo de Piedra BG": {
+        "note": 15,
+        "channel": 0
+      },
+      "Abismo de Piedra Cae": {
+        "note": 23,
+        "channel": 0
+      },
+      "Abismo de Piedra Cerrar Puerta": {
+        "note": 17,
+        "channel": 0
+      },
+      "Abismo de Piedra Tiembla": {
+        "note": 22,
+        "channel": 0
+      },
+      "Asamblea de Gracia BG": {
+        "note": 4,
+        "channel": 0
+      },
+      "Banderines Quemados": {
+        "note": 35,
+        "channel": 0
+      },
+      "Ending BG": {
+        "note": 25,
+        "channel": 0
+      },
+      "Escenario BG": {
+        "note": 5,
+        "channel": 0
+      },
+      "Espiral Oscuridad": {
+        "note": 30,
+        "channel": 0
+      },
+      "Espiral Oscuridad Off": {
+        "note": 31,
+        "channel": 0
+      },
+      "Fenomenales BG": {
+        "note": 8,
+        "channel": 0
+      },
+      "Full Blackout": {
+        "note": 1,
+        "channel": 0
+      },
+      "Muñecas BG": {
+        "note": 13,
+        "channel": 0
+      },
+      "Obertura BG": {
+        "note": 3,
+        "channel": 0
+      },
+      "Rocas No Tiemblan": {
+        "note": 33,
+        "channel": 0
+      },
+      "Rocas Tiemblan": {
+        "note": 32,
+        "channel": 0
+      },
+      "Tambores BG": {
+        "note": 2,
+        "channel": 0
+      },
+      "Valle de las Rocas BG": {
+        "note": 6,
+        "channel": 0
+      },
+      "Valle de las Rocas Desenfreno BG": {
+        "note": 39,
+        "channel": 0
+      },
+      "Valle de las Rocas Lava BG": {
+        "note": 11,
+        "channel": 0
+      },
+      "Valle de las Rocas No Lava BG": {
+        "note": 12,
+        "channel": 0
+      }
+    }
+  }
+}

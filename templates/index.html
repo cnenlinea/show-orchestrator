@@ -1,0 +1,830 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Show Orchestrator</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f5f7; --panel: #fff; --border: #d9dce1; --text: #1c1f24; --muted: #667080;
+    --accent: #2f6fed; --lane: #eceef2; --error: #c62828; --ok: #1b7f3b;
+    --lights: #e0a100; --projection: #2f6fed; --homeassistant: #1f9d6b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171b; --panel: #1e2126; --border: #33373f; --text: #e6e8ec; --muted: #98a1b0;
+      --accent: #6c9bff; --lane: #2a2e35; --error: #ff7b72; --ok: #5fd08a;
+      --lights: #f2c24a; --projection: #6c9bff; --homeassistant: #4fcf9c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header {
+    position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  h1 { font-size: 16px; margin: 0; }
+  h2 { font-size: 14px; margin: 0 0 8px; }
+  label { color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  select, input, button {
+    font: inherit; color: inherit; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+  }
+  select { max-width: 320px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section, aside > div {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; margin-bottom: 16px;
+  }
+  .muted { color: var(--muted); }
+  .song-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin-bottom: 8px; }
+  .song-head h2 { margin: 0; }
+  .lane { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 8px; margin: 4px 0; }
+  .lane-track { position: relative; height: 18px; background: var(--lane); border-radius: 4px; }
+  .cue-mark {
+    position: absolute; top: 2px; bottom: 2px; min-width: 4px; padding: 0;
+    border: 0; border-radius: 2px; opacity: .85;
+  }
+  .cue-mark:hover { opacity: 1; outline: 2px solid var(--text); }
+  .lights { background: var(--lights); } .projection { background: var(--projection); }
+  .homeassistant { background: var(--homeassistant); } .extra { background: var(--muted); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 3px 6px; border-top: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; border-top: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--muted); }
+  .build-form { display: grid; gap: 8px; }
+  .build-form label { justify-content: space-between; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  .tabs button.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .editor-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .song-edit-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin-bottom: 8px; }
+  .grow { flex: 1 1 160px; min-width: 0; }
+  label.grow input, td .grow, .pair input { width: 100%; }
+  input.time { width: 76px; }
+  input.number { width: 92px; }
+  .pair { display: flex; gap: 6px; }
+  .row-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  #view-edit input:invalid, #view-edit select:invalid { border-color: var(--error); }
+  #view-edit td { padding: 3px 4px; }
+  #doc-songs td:nth-child(-n+3), #doc-songs td:last-child { width: 1%; }
+  #doc-songs td select.grow { width: 100%; }
+  .editable { height: 22px; overflow: hidden; }
+  .editable .cue-mark { min-width: 8px; cursor: grab; touch-action: none; }
+  button:disabled { opacity: .4; cursor: default; }
+  #editor {
+    display: block; width: 100%; height: calc(100vh - 200px); min-height: 300px; resize: vertical;
+    font: 13px/1.5 ui-monospace, Consolas, monospace; tab-size: 2; padding: 8px;
+  }
+  .status { white-space: pre-wrap; word-break: break-word; }
+  #status { margin: 8px 0 0; }
+  .error, #show-error, #doc-error { color: var(--error); }
+  .ok { color: var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Show Orchestrator</h1>
+  <label>Show <select id="show-select"></select></label>
+  <button id="reload" title="Re-read the show file">Reload</button>
+  <label>MIDI port <select id="port-select"></select></label>
+  <button id="refresh-ports" title="Look for MIDI ports again">↻</button>
+  <span id="summary" class="muted"></span>
+</header>
+
+<main>
+  <div>
+    <nav class="tabs">
+      <button id="tab-timeline" class="active">Timeline</button>
+      <button id="tab-edit">Edit</button>
+      <button id="tab-source" title="The show file as text">Source</button>
+    </nav>
+    <p id="show-error"></p>
+    <div id="view-timeline">
+      <div id="songs"></div>
+    </div>
+    <div id="view-edit" hidden>
+      <div class="editor-bar">
+        <button id="save-doc" class="primary" title="Ctrl+S">Save</button>
+        <button id="revert-doc">Revert</button>
+        <span id="edit-status" class="status muted"></span>
+      </div>
+      <p id="doc-error" class="status"></p>
+      <div id="doc-body" hidden>
+        <p id="yaml-hint" class="muted" hidden>Saving rewrites the YAML file from scratch: comments and hand formatting in it are not kept.</p>
+        <section>
+          <details id="catalog">
+            <summary id="catalog-summary"></summary>
+            <p class="muted">Renaming an effect renames it in every cue. Leave the note empty to have one assigned automatically.</p>
+            <table id="catalog-table"></table>
+          </details>
+        </section>
+        <div id="doc-songs"></div>
+        <button id="add-song">＋ Add song</button>
+      </div>
+      <datalist id="media-files"></datalist>
+    </div>
+    <section id="view-source" hidden>
+      <div class="editor-bar">
+        <button id="save" class="primary" title="Ctrl+S">Save</button>
+        <button id="revert">Revert</button>
+        <span id="source-status" class="status muted"></span>
+      </div>
+      <textarea id="editor" spellcheck="false" wrap="off"></textarea>
+    </section>
+  </div>
+  <aside>
+    <div>
+      <h2>Build</h2>
+      <div class="build-form">
+        <label>Output directory <input id="output-dir" value="{{ default_output_dir }}"></label>
+        <label>Project
+          <select id="orchestrate">
+            <option value="">MIDI files only</option>
+            {% for backend in backends %}<option value="{{ backend }}" selected>{{ backend }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Velocity <input id="velocity" type="number" min="1" max="127" value="{{ default_velocity }}"></label>
+        <label>Use note lock <input id="note-lock" type="checkbox" checked></label>
+        <button id="build" class="primary">Build</button>
+      </div>
+      <p id="status" class="status"></p>
+    </div>
+    <div>
+      <h2>Effects</h2>
+      <p class="muted">Press ▶ (or a cue on the timeline) to send its note to the MIDI port.</p>
+      <table id="effects"></table>
+    </div>
+  </aside>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function h(tag, props = {}, ...children) {
+  const el = Object.assign(document.createElement(tag), props);
+  el.append(...children.filter((child) => child != null));
+  return el;
+}
+
+const TYPES = {{ effect_types|tojson }};
+const EXTRA = "extra track";
+const TIME_PATTERN = String.raw`\d{1,2}:\d{2}(\.\d+)?|\d+(\.\d+)?`;
+
+function parseTime(text) {
+  const match = /^(?:(\d+):)?(\d+(?:\.\d+)?)$/.exec(String(text ?? "").trim());
+  return match ? Number(match[1] || 0) * 60 + Number(match[2]) : NaN;
+}
+
+function formatTime(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round((seconds - minutes * 60) * 10) / 10;
+  const [whole, fraction] = String(rest).split(".");
+  return `${minutes}:${whole.padStart(2, "0")}${fraction ? "." + fraction : ""}`;
+}
+
+async function api(url, body, method) {
+  const options = body === undefined ? {} : {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  };
+  if (method) options.method = method;
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => ({error: `Server error (${response.status})`}));
+  if (!response.ok) throw new Error(data.error || `Server error (${response.status})`);
+  return data;
+}
+
+function setStatus(text, kind = "", id = "status") {
+  $(id).textContent = text;
+  $(id).className = `status ${kind}`;
+}
+
+function fillSelect(select, values, remembered, emptyLabel) {
+  select.replaceChildren(...values.map((value) => h("option", {value, textContent: value})));
+  if (!values.length) select.append(h("option", {value: "", textContent: emptyLabel}));
+  if (values.includes(remembered)) select.value = remembered;
+}
+
+async function playNote(note, channel) {
+  if (note === null) return;
+  const port = $("port-select").value;
+  if (!port) return setStatus("No MIDI output port available.", "error");
+  try {
+    await api("/api/play", {port, note, channel});
+    setStatus(`Sent note ${note} on channel ${channel} to ${port}.`, "ok");
+  } catch (err) {
+    setStatus(err.message, "error");
+  }
+}
+
+function playButton(note, channel) {
+  return h("button", {textContent: "▶", title: "Play note", onclick: () => playNote(note, channel)});
+}
+
+function lane(label, className, marks, songDuration) {
+  const track = h("div", {className: "lane-track"});
+  for (const mark of marks) {
+    const el = h("button", {className: `cue-mark ${className}`, title: mark.title, onclick: mark.onclick});
+    el.style.left = `${Math.min(mark.time / songDuration, 1) * 100}%`;
+    el.style.width = `${((mark.duration || 0) / songDuration) * 100}%`;
+    track.append(el);
+  }
+  return h("div", {className: "lane"}, h("span", {className: "muted", textContent: label}), track);
+}
+
+function renderSong(song) {
+  const section = h("section", {},
+    h("div", {className: "song-head"},
+      h("h2", {textContent: song.name}),
+      h("span", {className: "muted", textContent:
+        `starts ${formatTime(song.start)} · ${formatTime(song.duration)} long · ${song.cues.length} cues`}),
+      h("span", {className: "muted", textContent: song.file || "no audio file"})));
+
+  const types = [...new Set(song.cues.map((cue) => cue.type))];
+  for (const type of types) {
+    const marks = song.cues.filter((cue) => cue.type === type).map((cue) => ({
+      time: cue.time,
+      duration: cue.duration,
+      title: `${formatTime(cue.time)} ${cue.effect}` + (cue.note === null ? " (unknown effect)" : ` — note ${cue.note}`),
+      onclick: () => playNote(cue.note, cue.channel),
+    }));
+    section.append(lane(type, type, marks, song.duration));
+  }
+  if (song.extra_tracks.length) {
+    const marks = song.extra_tracks.map((extra) => ({
+      time: extra.time, duration: extra.duration, title: `${formatTime(extra.time)} ${extra.name} — ${extra.file}`,
+    }));
+    section.append(lane("extra tracks", "extra", marks, song.duration));
+  }
+
+  if (song.cues.length) {
+    const rows = song.cues.map((cue) => h("tr", {},
+      h("td", {className: "num", textContent: formatTime(cue.time)}),
+      h("td", {}, h("span", {className: `dot ${cue.type}`}), cue.type),
+      h("td", {textContent: cue.effect + (cue.note === null ? " (unknown effect)" : "")}),
+      h("td", {className: "num", textContent: cue.duration === null ? "" : `${cue.duration}s`}),
+      h("td", {className: "num", textContent: cue.note ?? ""})));
+    section.append(h("details", {},
+      h("summary", {textContent: "Cue list"}),
+      h("table", {},
+        h("tr", {},
+          h("th", {className: "num", textContent: "Time"}), h("th", {textContent: "Type"}),
+          h("th", {textContent: "Effect"}), h("th", {className: "num", textContent: "Hold"}),
+          h("th", {className: "num", textContent: "Note"})),
+        ...rows)));
+  }
+  return section;
+}
+
+function renderShow(show) {
+  $("summary").textContent =
+    `${show.songs.length} songs · ${formatTime(show.duration)} · ${show.effects.length} effects`;
+  $("songs").replaceChildren(...show.songs.map(renderSong));
+  $("effects").replaceChildren(
+    h("tr", {},
+      h("th", {textContent: "Effect"}), h("th", {className: "num", textContent: "Note"}),
+      h("th", {className: "num", textContent: "Ch"}), h("th", {className: "num", textContent: "Cues"}),
+      h("th", {})),
+    ...show.effects.map((effect) => h("tr", {},
+      h("td", {}, h("span", {className: `dot ${effect.type}`, title: effect.type}), effect.name),
+      h("td", {className: "num", textContent: effect.note}),
+      h("td", {className: "num", textContent: effect.channel}),
+      h("td", {className: "num", textContent: effect.cues}),
+      h("td", {className: "num"}, playButton(effect.note, effect.channel)))));
+}
+
+async function loadShow() {
+  const file = $("show-select").value;
+  $("show-error").textContent = "";
+  if (!file) {
+    $("show-error").textContent = "No show definitions found. Add a .csv or .yaml under shows/.";
+    return;
+  }
+  localStorage.setItem("show", file);
+  try {
+    const show = await api(`/api/show?file=${encodeURIComponent(file)}`);
+    assigned = new Map(show.effects.map((effect) => [effectKey(effect), effect]));
+    renderShow(show);
+  } catch (err) {
+    assigned = new Map();
+    $("summary").textContent = "";
+    $("songs").replaceChildren();
+    $("effects").replaceChildren();
+    $("show-error").textContent = `Could not load ${file}: ${err.message}`;
+  }
+  if (doc) renderCatalog();
+}
+
+async function loadPorts() {
+  const {ports} = await api("/api/ports");
+  fillSelect($("port-select"), ports, localStorage.getItem("port"), "none found");
+}
+
+async function build() {
+  setStatus("Building…");
+  try {
+    const result = await api("/api/build", {
+      file: $("show-select").value,
+      output_dir: $("output-dir").value,
+      orchestrate: $("orchestrate").value,
+      velocity: $("velocity").value,
+      note_lock: $("note-lock").checked,
+    });
+    const lines = [`Wrote ${result.midi_files.length} MIDI files to ${result.output_dir}`];
+    if (result.project) lines.push(`Project: ${result.project}`);
+    setStatus(lines.join("\n"), "ok");
+    loadShow();
+  } catch (err) {
+    setStatus(err.message, "error");
+  }
+}
+
+// ---- Graphical editor: `doc` is the show as /api/document describes it.
+let doc = null;
+let savedDoc = "";
+let assigned = new Map();           // effect key → the note and channel it currently gets
+const focusTargets = new WeakMap(); // song or row → the input to focus for it
+
+const effectKey = (effect) => `${effect.type}/${effect.id}`;
+const effectsOf = (type) => doc.effects.filter((effect) => effect.type === type);
+const docDirty = () => doc !== null && JSON.stringify(doc) !== savedDoc;
+
+function touched() {
+  setStatus(docDirty() ? "Unsaved changes" : loadedFile, "muted", "edit-status");
+}
+
+function cueCount(effect) {
+  return doc.songs.flatMap((song) => song.rows).filter((row) =>
+    row.kind === "cue" && row.type === effect.type && row.effect === effect.id).length;
+}
+
+function field(object, key, props = {}, afterInput) {
+  const input = h("input", {value: object[key] ?? "", ...props});
+  input.oninput = () => {
+    object[key] = input.value;
+    touched();
+    if (afterInput) afterInput();
+  };
+  return input;
+}
+
+function mediaField(object, placeholder) {
+  const input = field(object, "file", {placeholder, title: "Path of the file, relative to the project folder"});
+  input.setAttribute("list", "media-files");
+  return input;
+}
+
+function numberField(effect, key, max, placeholder) {
+  const input = h("input", {type: "number", className: "number", min: 0, max, placeholder, value: effect[key] ?? ""});
+  input.oninput = () => {
+    effect[key] = input.value === "" ? null : Number(input.value);
+    touched();
+  };
+  return input;
+}
+
+function iconButton(text, title, onclick, disabled = false) {
+  return h("button", {textContent: text, title, onclick, disabled});
+}
+
+function uniqueId(name) {
+  const base = name.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "")
+    .replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "effect";
+  let id = base;
+  for (let n = 2; doc.effects.some((effect) => effect.id === id); n++) id = `${base}_${n}`;
+  return id;
+}
+
+function newEffect(type) {
+  const name = (prompt(`Name of the new ${type} effect`) || "").trim();
+  if (!name) return null;
+  const isCsv = doc.format === "csv";
+  // A CSV show identifies effects by name alone, so a name can't be shared between types.
+  const existing = doc.effects.find((effect) => effect.name === name && (isCsv || effect.type === type));
+  if (existing && existing.type !== type) {
+    alert(`"${name}" is already a ${existing.type} effect. Effect names must be unique in a CSV show.`);
+    return null;
+  }
+  if (existing) return existing;
+  const effect = {type, id: isCsv ? name : uniqueId(name), name, note: null, channel: null};
+  doc.effects.push(effect);
+  return effect;
+}
+
+function renameEffect(effect, name) {
+  if (!name || name === effect.name) return;
+  if (doc.format !== "csv") {
+    effect.name = name;
+    return;
+  }
+  if (doc.effects.some((other) => other !== effect && other.id === name)) {
+    alert(`There is already an effect called "${name}".`);
+    return;
+  }
+  // The note lock knows a CSV effect by its name: pin the note so renaming can't move it.
+  const current = assigned.get(effectKey(effect));
+  if (effect.note === null && current) effect.note = current.note;
+  for (const row of doc.songs.flatMap((song) => song.rows)) {
+    if (row.kind === "cue" && row.type === effect.type && row.effect === effect.id) row.effect = name;
+  }
+  effect.id = effect.name = name;
+}
+
+function effectSelect(row) {
+  const NEW = "\u0000new";
+  const effects = effectsOf(row.type);
+  const select = h("select", {required: true, className: "grow"},
+    h("option", {value: "", textContent: "Choose an effect…"}),
+    ...effects.map((effect) => h("option", {value: effect.id, textContent: effect.name})),
+    row.effect && !effects.some((effect) => effect.id === row.effect)
+      ? h("option", {value: row.effect, textContent: `${row.effect} (not in the effect list)`}) : null,
+    h("option", {value: NEW, textContent: "＋ New effect…"}));
+  select.value = row.effect;
+  select.onchange = () => {
+    if (select.value === NEW) {
+      const effect = newEffect(row.type);
+      if (!effect) {
+        select.value = row.effect;
+        return;
+      }
+      row.effect = effect.id;
+    } else {
+      row.effect = select.value;
+    }
+    renderDoc(row);
+  };
+  return select;
+}
+
+function changeRowType(row, type) {
+  const {time, duration} = row;
+  for (const key of Object.keys(row)) delete row[key];
+  Object.assign(row, type === EXTRA
+    ? {kind: "extra", name: "", time, duration, file: ""}
+    : {kind: "cue", type, time, duration, effect: ""});
+}
+
+function rowLabel(row) {
+  if (row.kind === "extra") return row.name || "(unnamed track)";
+  const effect = effectsOf(row.type).find((candidate) => candidate.id === row.effect);
+  return effect ? effect.name : row.effect || "(no effect yet)";
+}
+
+function makeDraggable(mark, track, row, length) {
+  mark.onpointerdown = (down) => {
+    mark.setPointerCapture(down.pointerId);
+    const box = track.getBoundingClientRect();
+    const grab = down.clientX - mark.getBoundingClientRect().left;
+    let moved = false;
+    mark.onpointermove = (move) => {
+      if (!moved && Math.abs(move.clientX - down.clientX) < 3) return;
+      moved = true;
+      const step = move.shiftKey ? 0.1 : 1;
+      const raw = (move.clientX - grab - box.left) / box.width * length;
+      const seconds = Math.min(length, Math.max(0, Math.round(raw / step) * step));
+      row.time = formatTime(seconds);
+      mark.style.left = `${seconds / length * 100}%`;
+      mark.title = `${row.time} ${rowLabel(row)}`;
+      focusTargets.get(row).value = row.time;
+    };
+    mark.onpointerup = () => {
+      mark.onpointermove = null;
+      if (moved) touched(); else focusTargets.get(row).focus();
+    };
+  };
+}
+
+function editLane(song, label, className, rows, length) {
+  const track = h("div", {className: "lane-track editable"});
+  for (const row of rows) {
+    const start = parseTime(row.time);
+    if (!Number.isFinite(start)) continue;
+    const mark = h("button", {
+      className: `cue-mark ${className}`,
+      title: `${row.time} ${rowLabel(row)} — drag to move (Shift for tenths of a second)`,
+    });
+    mark.style.left = `${Math.min(start / length, 1) * 100}%`;
+    mark.style.width = `${((parseTime(row.duration) || 0) / length) * 100}%`;
+    makeDraggable(mark, track, row, length);
+    track.append(mark);
+  }
+  if (TYPES.includes(className)) {
+    track.title = "Double-click to add a cue here";
+    track.ondblclick = (event) => {
+      if (event.target !== track) return;
+      const box = track.getBoundingClientRect();
+      const seconds = Math.round((event.clientX - box.left) / box.width * length);
+      const row = {kind: "cue", type: className, time: formatTime(seconds), duration: "", effect: ""};
+      song.rows.push(row);
+      renderDoc(row);
+    };
+  }
+  return h("div", {className: "lane"}, h("span", {className: "muted", textContent: label}), track);
+}
+
+function drawLanes(song, container) {
+  const cues = song.rows.filter((row) => row.kind === "cue");
+  const extras = song.rows.filter((row) => row.kind === "extra");
+  const times = song.rows.map((row) => parseTime(row.time)).filter(Number.isFinite);
+  const length = parseTime(song.duration) > 0 ? parseTime(song.duration) : Math.max(1, ...times);
+  const lanes = TYPES.map((type) =>
+    editLane(song, type, type, cues.filter((cue) => cue.type === type), length));
+  if (extras.length) lanes.push(editLane(song, "extra tracks", "extra", extras, length));
+  container.replaceChildren(...lanes);
+}
+
+function renderRow(song, row, redraw) {
+  const remove = iconButton("✕", "Delete this row", () => {
+    song.rows.splice(song.rows.indexOf(row), 1);
+    renderDoc();
+  });
+  if (row.kind === "ignored") {
+    return h("tr", {},
+      h("td", {colSpan: 4, className: "muted", textContent: `Ignored line: ${row.cells.join(", ")}`}),
+      h("td", {className: "num"}, remove));
+  }
+  const isExtra = row.kind === "extra";
+  const time = field(row, "time", {
+    className: "time", placeholder: "0:00", required: true, pattern: TIME_PATTERN,
+    title: "When it starts, from the beginning of the song (MM:SS)",
+  }, redraw);
+  focusTargets.set(row, time);
+  const hold = field(row, "duration", {
+    className: "time", placeholder: isExtra ? "0:30" : "0.1", required: isExtra, pattern: TIME_PATTERN,
+    title: isExtra ? "Length of the clip (MM:SS or seconds)" : "How long the note is held (MM:SS or seconds, default 0.1)",
+  }, redraw);
+  const type = h("select", {}, ...[...TYPES, EXTRA].map((value) => h("option", {value, textContent: value})));
+  type.value = isExtra ? EXTRA : row.type;
+  type.onchange = () => {
+    changeRowType(row, type.value);
+    renderDoc(row);
+  };
+  const what = isExtra
+    ? h("div", {className: "pair"},
+        field(row, "name", {placeholder: "Track name", required: true}, redraw),
+        Object.assign(mediaField(row, "MIDI or audio file"), {required: true}))
+    : effectSelect(row);
+  return h("tr", {},
+    h("td", {}, time), h("td", {}, hold), h("td", {}, type), h("td", {}, what),
+    h("td", {className: "num"}, remove));
+}
+
+function moveSong(index, offset) {
+  const [song] = doc.songs.splice(index, 1);
+  doc.songs.splice(index + offset, 0, song);
+  renderDoc(song);
+}
+
+function renderSongEditor(song, index) {
+  const lanes = h("div");
+  const redraw = () => drawLanes(song, lanes);
+  const name = field(song, "name", {placeholder: "Song name", required: true});
+  focusTargets.set(song, name);
+  const length = field(song, "duration", {
+    className: "time", placeholder: "3:45", required: true, pattern: TIME_PATTERN,
+    title: "Length of the song (MM:SS)",
+  }, redraw);
+
+  const addRow = (row) => {
+    song.rows.push(row);
+    renderDoc(row);
+  };
+  const lastCue = song.rows.filter((row) => row.kind === "cue").at(-1);
+  const byTime = (row) => Number.isFinite(parseTime(row.time)) ? parseTime(row.time) : Infinity;
+
+  redraw();
+  return h("section", {},
+    h("div", {className: "song-edit-head"},
+      iconButton("▲", "Move song earlier", () => moveSong(index, -1), index === 0),
+      iconButton("▼", "Move song later", () => moveSong(index, 1), index === doc.songs.length - 1),
+      h("label", {className: "grow"}, "Song", name),
+      h("label", {}, "Length", length),
+      h("label", {className: "grow"}, "Audio", mediaField(song, "no audio file")),
+      iconButton("✕", "Delete this song", () => {
+        if (song.rows.length && !confirm(`Delete "${song.name}" and its ${song.rows.length} rows?`)) return;
+        doc.songs.splice(index, 1);
+        renderDoc();
+      })),
+    lanes,
+    song.rows.length ? h("table", {},
+      h("tr", {},
+        h("th", {textContent: "Time"}), h("th", {textContent: "Hold"}), h("th", {textContent: "Type"}),
+        h("th", {textContent: "Effect"}), h("th", {})),
+      ...song.rows.map((row) => renderRow(song, row, redraw))) : null,
+    h("div", {className: "row-actions"},
+      h("button", {textContent: "＋ Add cue", onclick: () => addRow({
+        kind: "cue", type: lastCue?.type ?? doc.effects[0]?.type ?? TYPES[0],
+        time: lastCue?.time ?? "0:00", duration: "", effect: "",
+      })}),
+      h("button", {textContent: "＋ Add extra track", title: "A MIDI or audio clip on its own track",
+        onclick: () => addRow({kind: "extra", name: "", time: "0:00", duration: "", file: ""})}),
+      h("button", {textContent: "Sort by time", disabled: song.rows.length < 2, onclick: () => {
+        song.rows.sort((a, b) => byTime(a) - byTime(b) || 0);
+        renderDoc();
+      }})));
+}
+
+function renderCatalog() {
+  const isCsv = doc.format === "csv";
+  $("catalog-summary").textContent = `Effects (${doc.effects.length}) — rename, set notes`;
+  $("catalog-table").replaceChildren(
+    h("tr", {},
+      h("th", {textContent: "Type"}), h("th", {textContent: "Name"}), h("th", {textContent: "Note"}),
+      isCsv ? null : h("th", {textContent: "Channel"}),
+      h("th", {className: "num", textContent: "Cues"}), h("th", {})),
+    ...doc.effects.map((effect) => {
+      const current = assigned.get(effectKey(effect));
+      const cues = cueCount(effect);
+      const name = h("input", {value: effect.name, required: true, className: "grow", title: isCsv ? "" : `id: ${effect.id}`});
+      name.onchange = () => {
+        renameEffect(effect, name.value.trim());
+        renderDoc();
+      };
+      return h("tr", {},
+        h("td", {}, h("span", {className: `dot ${effect.type}`}), effect.type),
+        h("td", {}, name),
+        h("td", {}, numberField(effect, "note", 127, current ? `auto (${current.note})` : "auto")),
+        isCsv ? null : h("td", {}, numberField(effect, "channel", 15, current ? `auto (${current.channel})` : "auto")),
+        h("td", {className: "num", textContent: cues}),
+        h("td", {className: "num"}, iconButton("✕", cues ? `Used by ${cues} cues` : "Delete this effect", () => {
+          doc.effects.splice(doc.effects.indexOf(effect), 1);
+          renderDoc();
+        }, cues > 0)));
+    }));
+}
+
+function renderDoc(focus) {
+  $("yaml-hint").hidden = doc.format !== "yaml";
+  $("doc-songs").replaceChildren(...doc.songs.map(renderSongEditor));
+  renderCatalog();
+  touched();
+  if (focus) focusTargets.get(focus)?.focus();
+}
+
+async function loadDoc() {
+  const file = $("show-select").value;
+  doc = null;
+  savedDoc = "";
+  $("doc-error").textContent = "";
+  if (file) {
+    try {
+      doc = await api(`/api/document?file=${encodeURIComponent(file)}`);
+      savedDoc = JSON.stringify(doc);
+      renderDoc();
+    } catch (err) {
+      $("doc-error").textContent =
+        `This file can't be opened in the editor: ${err.message}\nFix it in the Source tab.`;
+    }
+  }
+  $("doc-body").hidden = doc === null;
+}
+
+async function saveDoc() {
+  if (doc === null) return;
+  // Commit a rename that is still being typed.
+  document.activeElement?.blur();
+  const invalid = $("view-edit").querySelector(":invalid");
+  if (invalid) {
+    $("catalog").open ||= $("catalog").contains(invalid);
+    invalid.focus();
+    return setStatus("Fill in or fix the highlighted field first.", "error", "edit-status");
+  }
+  try {
+    await api("/api/document", {file: loadedFile, document: doc}, "PUT");
+    await loadShow();
+    await loadDoc();
+    loadSource();
+    setStatus(`Saved ${loadedFile}.`, "ok", "edit-status");
+  } catch (err) {
+    setStatus(err.message, "error", "edit-status");
+  }
+}
+
+// ---- Source editor: the show file as text.
+let savedSource = "";
+let loadedFile = "";
+let activeTab = "timeline";
+const sourceDirty = () => $("editor").value !== savedSource;
+const isDirty = () => docDirty() || sourceDirty();
+
+async function loadSource() {
+  const file = $("show-select").value;
+  if (!file) return;
+  try {
+    const {text} = await api(`/api/source?file=${encodeURIComponent(file)}`);
+    $("editor").value = savedSource = text;
+    setStatus(file, "muted", "source-status");
+  } catch (err) {
+    setStatus(err.message, "error", "source-status");
+  }
+}
+
+async function saveSource() {
+  const text = $("editor").value;
+  try {
+    await api("/api/source", {file: loadedFile, text}, "PUT");
+    savedSource = text;
+    setStatus(`Saved ${loadedFile}.`, "ok", "source-status");
+    loadShow();
+    loadDoc();
+  } catch (err) {
+    setStatus(err.message, "error", "source-status");
+  }
+}
+
+// The two editors change the same file, so only one may hold unsaved changes.
+const editors = {
+  edit: {dirty: docDirty, load: loadDoc, save: saveDoc, other: "source"},
+  source: {dirty: sourceDirty, load: loadSource, save: saveSource, other: "edit"},
+};
+
+function showTab(name) {
+  const other = editors[editors[name]?.other];
+  if (other?.dirty()) {
+    if (!confirm("Discard the unsaved changes in the other editor?")) return;
+    other.load();
+  }
+  activeTab = name;
+  for (const tab of ["timeline", "edit", "source"]) {
+    $(`view-${tab}`).hidden = tab !== name;
+    $(`tab-${tab}`).classList.toggle("active", tab === name);
+  }
+  localStorage.setItem("tab", name);
+}
+
+function selectShow() {
+  if (isDirty() && !confirm(`Discard unsaved changes to ${loadedFile}?`)) {
+    $("show-select").value = loadedFile;
+    return;
+  }
+  loadedFile = $("show-select").value;
+  loadShow();
+  loadDoc();
+  loadSource();
+}
+
+for (const tab of ["timeline", "edit", "source"]) $(`tab-${tab}`).onclick = () => showTab(tab);
+$("save-doc").onclick = saveDoc;
+$("revert-doc").onclick = () => {
+  if (!docDirty() || confirm("Discard unsaved changes?")) loadDoc();
+};
+$("add-song").onclick = () => {
+  const song = {name: "", duration: "", file: "", rows: []};
+  doc.songs.push(song);
+  renderDoc(song);
+};
+$("save").onclick = saveSource;
+$("revert").onclick = () => {
+  if (!sourceDirty() || confirm("Discard unsaved changes?")) loadSource();
+};
+$("editor").oninput = () => setStatus(sourceDirty() ? "Unsaved changes" : loadedFile, "muted", "source-status");
+$("editor").onkeydown = (event) => {
+  if (event.key === "Tab") {
+    event.preventDefault();
+    $("editor").setRangeText("  ", $("editor").selectionStart, $("editor").selectionEnd, "end");
+    $("editor").oninput();
+  }
+};
+document.onkeydown = (event) => {
+  if (event.key === "s" && (event.ctrlKey || event.metaKey) && editors[activeTab]) {
+    event.preventDefault();
+    editors[activeTab].save();
+  }
+};
+window.onbeforeunload = (event) => { if (isDirty()) event.preventDefault(); };
+
+$("show-select").onchange = selectShow;
+$("reload").onclick = () => {
+  loadShow();
+  if (!docDirty()) loadDoc();
+  if (!sourceDirty()) loadSource();
+};
+$("refresh-ports").onclick = loadPorts;
+$("port-select").onchange = () => localStorage.setItem("port", $("port-select").value);
+$("build").onclick = build;
+
+(async () => {
+  const {shows} = await api("/api/shows");
+  fillSelect($("show-select"), shows, localStorage.getItem("show"), "none found");
+  loadedFile = $("show-select").value;
+  const tab = localStorage.getItem("tab");
+  showTab(tab in editors ? tab : "timeline");
+  loadPorts();
+  loadShow();
+  loadDoc();
+  loadSource();
+  const {files} = await api("/api/media");
+  $("media-files").replaceChildren(...files.map((value) => h("option", {value})));
+})();
+</script>
+</body>
+</html>

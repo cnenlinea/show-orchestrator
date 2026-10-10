@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "effects": {
+    "lights": {
+      "Blackout Luz": {
+        "note": 2,
+        "channel": 0
+      },
+      "Fade In": {
+        "note": 4,
+        "channel": 0
+      },
+      "Luz Intro": {
+        "note": 0,
+        "channel": 0
+      },
+      "Strobe": {
+        "note": 6,
+        "channel": 0
+      }
+    },
+    "projection": {
+      "Blackout Proyección": {
+        "note": 3,
+        "channel": 0
+      },
+      "Fondo Acapella": {
+        "note": 5,
+        "channel": 0
+      }
+    }
+  }
+}
