@@ -57,6 +57,24 @@ Each generated `.mid` carries standard MIDI meta events: a track name, and a mar
 
 Cues fire at velocity **127** by default. QLC+ scales note velocity into the input value, so a lower velocity arrives as a partial level rather than a clean trigger; change it with `--velocity` only if your receivers want that.
 
+### Lights timelines from light-show-simulator
+
+Lights cues come from [light-show-simulator](https://github.com/cnenlinea/light-show-simulator), which writes one
+`<variant>.lights.csv` per show file. A show pulls it in with an `include` row (any row, file column):
+
+```csv
+,include,,,,castillo_afuera_a.lights.csv
+```
+
+The included file's cues join the songs of the same name; its audio rows only name the songs. YAML shows use a
+top-level `include: [castillo_afuera_a.lights.csv]`.
+
+- An optional 7th CSV column, `channel`, gives an effect's MIDI channel (counting from 0, like YAML). The lights
+  file writes its notes and channels in, so show-orchestrator never assigns lights notes itself.
+- Once a show includes a file, a `lights` row that does not come from an included file is refused, and so is an
+  effect of another type on the lights channels (1 and 2, i.e. MIDI channels 2 and 3).
+- Two effects may never share a note and channel, whatever their type.
+
 ### Web UI
 
 ```console

@@ -4,6 +4,7 @@ from typing import TypedDict
 import mido
 
 from show_orchestrator.models import Effect, EffectType, Event, MidiEvent, Show
+from show_orchestrator.checks import check_note_clashes
 from show_orchestrator.notes import assign_missing_notes
 
 # Full velocity: cues are triggers, and QLC+ scales note velocity into the
@@ -43,6 +44,7 @@ class MidiGenerator:
         lock_path: Path | None = None,
     ) -> dict[str, Effect]:
         effect_mapping = assign_missing_notes(effects, self.default_channel, lock_path)
+        check_note_clashes(effect_mapping)
         return {
             effect.id: effect
             for effects_of_type in effect_mapping.values()
