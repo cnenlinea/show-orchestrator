@@ -82,6 +82,28 @@ python note_mapper.py shows/castillo/castillo_afuera_a.csv
 
 Opens a small Tk window listing every effect with its assigned MIDI note and channel. Pick a MIDI output port in the dropdown and press **Play Note** to audition a cue against MadMapper/QLC+ before the show.
 
+### MadMapper cue triggers
+
+```console
+python madmapper_patch.py shows/castillo/castillo_afuera_a.csv path/to/Castillo.mad
+```
+
+Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes them into the project file: every MadMapper cue named like a `projection` effect gets a trigger on that effect's note and channel — the same notes the generated MIDI files play, note lock included. The result is saved as a new file, `<project>_midi.mad` next to the original (or `-o`); the original is never overwritten. Close the project in MadMapper first, so the file on disk is up to date.
+
+- Names match ignoring case, accents and extra spaces (`Muñecas BG` ↔ `munecas bg`). A YAML effect matches by `name`, or by `id` when the name matches no cue.
+- A matched cue's existing note triggers are replaced. Its CC triggers, cues that match no effect, and every other mapping (e.g. a CC driving opacity) are left as they are.
+- The output lists what was set, effects with no cue of the same name, and cues that were left alone — rename one side to make them match.
+
+| Option | Purpose |
+| --- | --- |
+| `-o`, `--output` | Where to save the patched project |
+| `--type TYPE` | Effect type to map (default `projection`); repeat for several |
+| `--device NAME` | MadMapper MIDI input to listen on (default `all`, any input) |
+| `--dry-run` | Print the report without saving |
+| `--no-note-lock` | Ignore the note lock file |
+
+MadMapper names notes from `C-2` = 0 (so note 60 is `C3`) and numbers channels from 1, so effect channel 0 shows up as `Midi 1`. The `.mad` reader/writer is [show_orchestrator/madfile.py](show_orchestrator/madfile.py); a project loaded and saved unchanged comes back byte-for-byte identical.
+
 ## Show definition formats
 
 Timestamps and durations are `MM:SS` or `MM:SS.sss` strings (or plain seconds as numbers). Event timestamps are **relative to the start of their song**, not the whole show.
@@ -157,7 +179,7 @@ Deleting the lock re-assigns everything from scratch; `--no-note-lock` skips it 
 
 1. Open the generated `.rpp`. You get one track per effect type (`lights`, `projection`, `homeassistant`), an **Audio Files** track, one track per extra clip, and a marker at the start of each song.
 2. Route each effect track's MIDI output to a virtual MIDI port (e.g. [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) on Windows): track I/O → MIDI Hardware Output.
-3. Point MadMapper (Cues → MIDI triggers) and QLC+ (Virtual Console / Input profiles) at those ports and map the notes — use the note mapper GUI to audition them.
+3. Point MadMapper (Cues → MIDI triggers) and QLC+ (Virtual Console / Input profiles) at those ports and map the notes — `madmapper_patch.py` can set the MadMapper cue triggers for you, and the note mapper GUI auditions them.
 4. Press play: audio for the cast, MIDI notes for the machines. Rehearse by scrubbing anywhere in the timeline.
 
 ## Project layout
@@ -165,6 +187,7 @@ Deleting the lock re-assigns everything from scratch; `--no-note-lock` skips it 
 ```
 main.py                      CLI entry point
 note_mapper.py               Tk GUI to inspect/audition effect notes
+madmapper_patch.py           CLI: set MadMapper cue MIDI triggers from a show
 web.py                       Flask web UI: timeline, editor, note audition, build
 templates/index.html         the web UI's single page
 show_orchestrator/
@@ -173,6 +196,8 @@ show_orchestrator/
   notes.py                   note/channel assignment + notes.lock
   editor.py                  show file ⇄ the document the web editor works on
   generator.py               Show → .mid files (mido)
+  madfile.py                 MadMapper .mad reader/writer (Qt QDataStream)
+  madmapper.py               effects → MadMapper cue MIDI triggers
   backends/reaper.py         Show + .mid files → .rpp (reathon)
 tests/                       pytest suite
 shows/                       real show definitions + media (git-ignored)
