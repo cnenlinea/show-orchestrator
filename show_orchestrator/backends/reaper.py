@@ -29,12 +29,22 @@ class ReaperBackend:
             source.name = f"SOURCE {override}"
         return source
 
-    def _copy_media(self, file_path: Path, output_dir: Path) -> None:
+    def _copy_media(self, file_path: Path, output_dir: Path) -> Path:
+        """Copy media next to the project; returns its path relative to the project."""
         if not file_path.exists():
             raise FileNotFoundError(f"Media file not found: {file_path}")
         output_path = output_dir / file_path.name
         if not output_path.exists():
             shutil.copy2(file_path, output_path)
+        return Path(file_path.name)
+
+    @staticmethod
+    def _relative_to_project(file_path: Path, output_dir: Path) -> Path:
+        """`file_path` relative to the project folder when it is inside it."""
+        try:
+            return Path(file_path).resolve().relative_to(output_dir.resolve())
+        except ValueError:
+            return Path(file_path).resolve()
 
     def create_project(
         self,
@@ -42,6 +52,11 @@ class ReaperBackend:
         midi_files: dict[str, dict[EffectType, GeneratedMidi]],
         output_dir: Path,
     ) -> None:
+        """Build the project; save it into `output_dir` with `save_project`.
+
+        Media is copied into `output_dir` and referenced relative to it, so
+        the folder can be moved or opened on another machine as a whole.
+        """
         audio_files_included = any(track.file_path for track in show.audio_tracks)
 
         tracks = {}
@@ -60,21 +75,21 @@ class ReaperBackend:
         track_index = 0
         for track in show.audio_tracks:
             if track.file_path:
-                source = self._create_source(track.file_path)
+                media = self._copy_media(Path(track.file_path), output_dir)
+                source = self._create_source(media)
                 item = Item(
                     source,
                     position=current_position,
                     length=track.duration_seconds
                 )
                 tracks["audio"].add(item)
-                self._copy_media(Path(track.file_path), output_dir)
 
             if track.extra_tracks:
                 for extra_track in track.extra_tracks:
                     new_track = Track(name=extra_track.name)
                     self.project.add(new_track)
-                    source = self._create_source(extra_track.file_path)
-                    self._copy_media(Path(extra_track.file_path), output_dir)
+                    media = self._copy_media(Path(extra_track.file_path), output_dir)
+                    source = self._create_source(media)
                     item = Item(
                         source,
                         position=current_position+extra_track.timestamp_seconds,
@@ -84,7 +99,9 @@ class ReaperBackend:
 
             midi_file_paths = midi_files.get(track.name, {})
             for effect_type, generated_midi in midi_file_paths.items():
-                source = self._create_source(generated_midi["file_path"])
+                source = self._create_source(
+                    self._relative_to_project(generated_midi["file_path"], output_dir)
+                )
                 item = Item(
                     source,
                     position=current_position,
