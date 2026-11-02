@@ -9,6 +9,8 @@ from show_orchestrator.models import AudioTrack, Effect, EffectType, Show
     ("song.mp3", "SOURCE MP3"),
     ("song.m4a", "SOURCE VIDEO"),
     ("song.M4A", "SOURCE VIDEO"),
+    ("song.mp3 (1).mpeg", "SOURCE VIDEO"),
+    ("song.mpg", "SOURCE VIDEO"),
 ])
 def test_create_source_formats(file_name, expected):
     assert ReaperBackend()._create_source(file_name).name == expected

@@ -86,9 +86,10 @@ Opens a small Tk window listing every effect with its assigned MIDI note and cha
 
 ```console
 python madmapper_patch.py shows/castillo/castillo_afuera_a.csv path/to/Castillo.mad
+python madmapper_patch.py shows/musical/musical_2026.csv path/to/Musical2026.madproject
 ```
 
-Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes them into the project file: every MadMapper cue named like a `projection` effect gets a trigger on that effect's note and channel — the same notes the generated MIDI files play, note lock included. The result is saved as a new file, `<project>_midi.mad` next to the original (or `-o`); the original is never overwritten. Close the project in MadMapper first, so the file on disk is up to date.
+Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes them into the project file: every MadMapper cue named like a `projection` effect gets a trigger on that effect's note and channel — the same notes the generated MIDI files play, note lock included. In MadMapper 6, which replaced cues with timelines, the same goes for timelines: the trigger plays the timeline from the beginning. The result is saved as a new project next to the original, `<project>_midi.mad` or a copied `<project>_midi.madproject` folder (or `-o`); the original is never overwritten. Close the project in MadMapper first, so the file on disk is up to date.
 
 - Names match ignoring case, accents and extra spaces (`Muñecas BG` ↔ `munecas bg`). A YAML effect matches by `name`, or by `id` when the name matches no cue.
 - A matched cue's existing note triggers are replaced. Its CC triggers, cues that match no effect, and every other mapping (e.g. a CC driving opacity) are left as they are.
@@ -103,6 +104,44 @@ Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes th
 | `--no-note-lock` | Ignore the note lock file |
 
 MadMapper names notes from `C-2` = 0 (so note 60 is `C3`) and numbers channels from 1, so effect channel 0 shows up as `Midi 1`. The `.mad` reader/writer is [show_orchestrator/madfile.py](show_orchestrator/madfile.py); a project loaded and saved unchanged comes back byte-for-byte identical.
+
+### MadMapper scene scaffolding
+
+```console
+python madmapper_scenes.py path/to/Show.mad scenes.csv --template "Base Quad"
+python madmapper_scenes.py path/to/Show.madproject scenes.csv --template Calib --fade 1 --blackout Blackout
+```
+
+Builds a barebones framework to start a show from: for every scene in `scenes.csv`, it adds
+
+- a surface **group** named after the scene, hidden to start with;
+- inside it, copies of the **template** showing the scene's video or image: a single quad, or — when the template is a group — every surface in that group (same shape, position, crop and settings), named `<scene> - <surface>`;
+- a **trigger** named after the scene that makes its group visible, hides every other scene's group, and restarts the scene's video from the beginning: a cue in MadMapper 5, or a timeline in MadMapper 6, which replaced cues with timelines.
+
+`scenes.csv` has two columns; media paths are relative to the CSV, and a scene without media gets surfaces that show nothing:
+
+```csv
+scene,media
+Intro,media/intro.mp4
+Storm,media/storm.png
+Tap,
+```
+
+It works with MadMapper 5 `.mad` files and MadMapper 6 `.madproject` folders, and saves a copy next to the original — `<name>_scenes.mad`, or a copied `<name>_scenes.madproject` folder (or `-o`). Close the project in MadMapper first. Name the scenes like the show's projection effects and `madmapper_patch.py` can then give each trigger its MIDI note.
+
+| Option | Purpose |
+| --- | --- |
+| `-t`, `--template NAME` | Quad, or group of surfaces, to copy into every scene (required) |
+| `--fade SECONDS` | Transition time of the new triggers (default: the project's) |
+| `--blackout NAME` | Also add a trigger by that name that hides every top-level surface |
+| `--no-restart` | Don't make scene triggers restart their video |
+| `--bank NAME` | Bank for the new triggers (default: the active one) |
+| `-o`, `--output` | Where to save the result |
+
+- New groups, surfaces, media and triggers copy an existing one of the same kind from the project where there is one, so they pick up its settings (playback options...).
+- A file already used in the project is reused rather than added twice. A video's length comes from `ffprobe` when it is installed; otherwise check its loop end in MadMapper.
+- Triggers go in the first free slots of the active bank, or `--bank NAME`. It stops, saving nothing, if a scene name is already taken or the bank has too few free slots.
+- Prepare the template in MadMapper first. Scene surfaces land exactly on top of it, and scene triggers don't hide it — the blackout does.
 
 ## Show definition formats
 
@@ -188,6 +227,7 @@ Deleting the lock re-assigns everything from scratch; `--no-note-lock` skips it 
 main.py                      CLI entry point
 note_mapper.py               Tk GUI to inspect/audition effect notes
 madmapper_patch.py           CLI: set MadMapper cue MIDI triggers from a show
+madmapper_scenes.py          CLI: scaffold MadMapper scenes (group, quad, trigger)
 web.py                       Flask web UI: timeline, editor, note audition, build
 templates/index.html         the web UI's single page
 show_orchestrator/
@@ -198,6 +238,7 @@ show_orchestrator/
   generator.py               Show → .mid files (mido)
   madfile.py                 MadMapper .mad reader/writer (Qt QDataStream)
   madmapper.py               effects → MadMapper cue MIDI triggers
+  madscenes.py               scenes → MadMapper groups, quads, cues/timelines
   backends/reaper.py         Show + .mid files → .rpp (reathon)
 tests/                       pytest suite
 shows/                       real show definitions + media (git-ignored)

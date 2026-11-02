@@ -5,6 +5,10 @@ alternating (target URL, settings) entries. A cue trigger targets
 `/cues/<bank>/cues/by_name/<cue>` and its settings name the MIDI source, e.g.
 `/midiin/all/1/C#-2`: any MIDI input, channel 1 (MadMapper counts from 1, mido
 from 0) and note 1 (MadMapper names notes from C-2 = 0).
+
+MadMapper 6 replaced cues with timelines; a trigger there targets
+`/timelines/<bank>/by_name/<timeline>/play_from_beginning`, which is how
+MadMapper 6 converts a MadMapper 5 cue trigger. Below, "cue" means either.
 """
 import copy
 import re
@@ -24,12 +28,10 @@ DEFAULT_DEVICE = "all"
 MIDI_SOURCE = re.compile(r"^/midiin/(?P<device>.+)/(?P<channel>\d+)/(?P<control>[^/]+)$")
 CC_CONTROL = re.compile(r"^cc\d+$")
 
-# Settings of a cue trigger made in MadMapper's UI, in the key order MadMapper
+# Settings of a cue trigger made in MadMapper 5's UI, in the key order it
 # writes. Used when the project has no cue trigger to copy settings from.
-_IDENTITY_CURVE = (
-    b"QVector<float>\x00",
-    b"\x00\x00\x00\x04" + b"\x00" * 16 + (b"?\xf0" + b"\x00" * 6) * 2,
-)
+_IDENTITY_CURVE_POINTS = b"\x00\x00\x00\x04" + b"\x00" * 16 + (b"?\xf0" + b"\x00" * 6) * 2
+_IDENTITY_CURVE = (b"QVector<float>\x00", _IDENTITY_CURVE_POINTS)
 DEFAULT_TRIGGER_SETTINGS: Variant = (T_MAP, [
     ("toggle", (T_BOOL, False, 0)),
     ("targetMin", (T_DOUBLE, 0.0, 0)),
@@ -54,6 +56,23 @@ DEFAULT_TRIGGER_SETTINGS: Variant = (T_MAP, [
 ], 0)
 
 
+def _sorted_map(var: Variant) -> Variant:
+    """`var` with every map's keys ascending, the order MadMapper 6 writes."""
+    type_id, value, is_null = var
+    if type_id != T_MAP:
+        return var
+    return (T_MAP, sorted(((k, _sorted_map(v)) for k, v in value), key=lambda p: p[0]), is_null)
+
+
+def default_trigger_settings(mm6: bool) -> Variant:
+    if not mm6:
+        return DEFAULT_TRIGGER_SETTINGS
+    settings = copy.deepcopy(DEFAULT_TRIGGER_SETTINGS)
+    curve_settings = get(settings[1], "curveSettings")[1]
+    set_value(curve_settings, "curve", (T_USER, (b"QList<float>\x00", _IDENTITY_CURVE_POINTS), 0))
+    return _sorted_map(settings)
+
+
 class CueMatchError(ValueError):
     pass
 
@@ -62,9 +81,12 @@ class CueMatchError(ValueError):
 class Cue:
     bank: str
     name: str
+    timeline: bool = False  # a MadMapper 6 timeline rather than a cue
 
     @property
     def url(self) -> str:
+        if self.timeline:
+            return f"/timelines/{self.bank}/by_name/{self.name}/play_from_beginning"
         return f"/cues/{self.bank}/cues/by_name/{self.name}"
 
 
@@ -91,17 +113,25 @@ def normalize_name(name: str) -> str:
 
 
 def list_cues(project: MadProject) -> list[Cue]:
-    """Every named cue in the project, bank by bank, in cue grid order."""
-    cue_banks = get(project.root, "cueBanksV4")
-    if cue_banks is None:
-        return []
+    """Every named cue (or MadMapper 6 timeline), bank by bank, in grid order."""
     cues = []
-    for bank in get(cue_banks[1], "cueBanks")[1]:
-        bank_name = get(bank[1], "bank_name")[1]
-        for cue in get(bank[1], "cues")[1]:
-            name = get(cue[1], "name")
-            if name is not None and name[1]:
-                cues.append(Cue(bank_name, name[1]))
+    cue_banks = get(project.root, "cueBanksV4")
+    if cue_banks is not None:
+        for bank in get(cue_banks[1], "cueBanks")[1]:
+            bank_name = get(bank[1], "bank_name")[1]
+            for cue in get(bank[1], "cues")[1]:
+                name = get(cue[1], "name")
+                if name is not None and name[1]:
+                    cues.append(Cue(bank_name, name[1]))
+    timeline_banks = get(project.root, "timelineBanks")
+    if timeline_banks is not None:
+        for bank in get(timeline_banks[1], "timelineBanks")[1]:
+            bank_name = get(bank[1], "bank_name")[1]
+            for slot in get(bank[1], "timelines")[1]:
+                timeline = get(slot[1], "timeline") if slot[1] else None
+                name = get(timeline[1], "name") if timeline else None
+                if name is not None and name[1]:
+                    cues.append(Cue(bank_name, name[1], timeline=True))
     return cues
 
 
@@ -112,10 +142,10 @@ def _midi_source(settings: Variant) -> re.Match | None:
     return MIDI_SOURCE.match(to_plain(channel_infos).get("url") or "")
 
 
-def _channel_infos(note: int, channel: int, device: str) -> Variant:
+def _channel_infos(note: int, channel: int, device: str, mm6: bool = False) -> Variant:
     control = note_name(note)
     midi_channel = channel + 1
-    return (T_MAP, [
+    infos = (T_MAP, [
         ("url", (T_STRING, f"/midiin/{device}/{midi_channel}/{control}", 0)),
         ("path", (T_STRING, f"Midi {midi_channel}/{control}", 0)),
         ("name", (T_STRING, f"{midi_channel}/{control}", 0)),
@@ -126,6 +156,7 @@ def _channel_infos(note: int, channel: int, device: str) -> Variant:
             ("ct", (T_INT, 1, 0)),
         ], 0)),
     ], 0)
+    return _sorted_map(infos) if mm6 else infos
 
 
 def match_effects_to_cues(
@@ -182,12 +213,13 @@ def patch_cue_triggers(
         set_value(project.root, "mappings", mappings)
     entries = mappings[1]
 
-    template = DEFAULT_TRIGGER_SETTINGS
+    mm6 = get(project.root, "timelineBanks") is not None
+    template = default_trigger_settings(mm6)
     kept: list[Variant] = []
     for i in range(0, len(entries), 2):
         target, settings = entries[i], entries[i + 1]
         source = _midi_source(settings)
-        is_cue_trigger = source is not None and target[1].startswith("/cues/")
+        is_cue_trigger = source is not None and target[1].startswith(("/cues/", "/timelines/"))
         if is_cue_trigger:
             template = settings
         is_note = source is not None and not CC_CONTROL.match(source["control"])
@@ -197,7 +229,8 @@ def patch_cue_triggers(
 
     for cue, effect in matches.items():
         settings = copy.deepcopy(template)
-        set_value(settings[1], "channelInfos", _channel_infos(effect.note, effect.channel, device))
+        set_value(settings[1], "channelInfos",
+                  _channel_infos(effect.note, effect.channel, device, mm6))
         set_value(settings[1], "enabled", (T_BOOL, True, 0))
         kept += [(T_STRING, cue.url, 0), settings]
         report.patched.append((effect.id, cue, effect.note, effect.channel))

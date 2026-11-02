@@ -1,7 +1,9 @@
 import argparse
 from pathlib import Path
 
-from show_orchestrator.madfile import MadProject
+from show_orchestrator.madfile import (
+    MadFileError, MadProject, mad_file_in, output_path_for, save_project,
+)
 from show_orchestrator.madmapper import (
     DEFAULT_DEVICE, CueMatchError, note_name, patch_cue_triggers,
 )
@@ -13,8 +15,8 @@ from show_orchestrator.parser import Parser
 def main():
     arg_parser = argparse.ArgumentParser(
         description=(
-            "Set the MIDI trigger of every MadMapper cue named like a show effect\n"
-            "to that effect's note, and save the result as a new .mad file."
+            "Set the MIDI trigger of every MadMapper cue (MadMapper 6: timeline) named\n"
+            "like a show effect to that effect's note, and save the result as a new project."
         ),
         formatter_class=argparse.RawTextHelpFormatter
     )
@@ -28,13 +30,13 @@ def main():
     arg_parser.add_argument(
         "project",
         type=Path,
-        help="MadMapper project (.mad) to read cues from."
+        help="MadMapper 5 .mad file or MadMapper 6 .madproject folder to read cues from."
     )
 
     arg_parser.add_argument(
         "-o", "--output",
         type=Path,
-        help="Where to save the patched project (default: <project>_midi.mad next to it)"
+        help="Where to save the patched project (default: <project>_midi next to it)"
     )
 
     arg_parser.add_argument(
@@ -70,9 +72,9 @@ def main():
     )
 
     args = arg_parser.parse_args()
-    output: Path = args.output or args.project.with_name(f"{args.project.stem}_midi.mad")
+    output: Path = args.output or output_path_for(args.project, "_midi")
     if output.resolve() == args.project.resolve():
-        arg_parser.error("the output must be a new file, not the project being read")
+        arg_parser.error("the output must be a new project, not the one being read")
 
     show = Parser().load_show(args.file)
     lock_path = None if args.no_note_lock else lock_path_for(args.file)
@@ -84,10 +86,10 @@ def main():
         for effect in effect_mapping.get(EffectType(effect_type), {}).values()
     ]
 
-    project = MadProject.load(args.project)
     try:
+        project = MadProject.load(mad_file_in(args.project))
         report = patch_cue_triggers(project, effects, args.device)
-    except CueMatchError as error:
+    except (CueMatchError, MadFileError) as error:
         arg_parser.error(str(error))
 
     for effect_id, cue, note, channel in report.patched:
@@ -105,8 +107,11 @@ def main():
     if args.dry_run:
         print("Dry run: nothing saved.")
         return
-    project.save(output)
-    print(f"Saved {output}")
+    try:
+        saved = save_project(project, args.project, output)
+    except MadFileError as error:
+        arg_parser.error(str(error))
+    print(f"Saved {saved}")
 
 
 if __name__ == "__main__":

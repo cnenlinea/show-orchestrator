@@ -12,6 +12,8 @@ from show_orchestrator.models import EffectType, Show
 SOURCE_FORMAT_OVERRIDES = {
     ".m4a": "VIDEO",
     ".mp4": "VIDEO",
+    ".mpeg": "VIDEO",
+    ".mpg": "VIDEO",
 }
 
 

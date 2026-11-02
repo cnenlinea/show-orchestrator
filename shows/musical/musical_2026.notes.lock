@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "effects": {
+    "projection": {
+      "1. Sleigh Rider (Intro)": {
+        "note": 0,
+        "channel": 0
+      },
+      "2. Medley de Navidad": {
+        "note": 1,
+        "channel": 0
+      },
+      "3. Tap": {
+        "note": 2,
+        "channel": 0
+      },
+      "4. Si tan solo crees": {
+        "note": 3,
+        "channel": 0
+      },
+      "5. Duerme": {
+        "note": 4,
+        "channel": 0
+      },
+      "6. Me sostendras": {
+        "note": 5,
+        "channel": 0
+      },
+      "7. Christmas Carols": {
+        "note": 6,
+        "channel": 0
+      },
+      "Blackout": {
+        "note": 7,
+        "channel": 0
+      }
+    }
+  }
+}

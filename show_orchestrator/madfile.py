@@ -1,14 +1,17 @@
 """Read and write MadMapper .mad project files.
 
 A .mad file is a Qt QDataStream: a 0x0BADBABE magic, a stream version, then a
-QVariantMap. The stream version (12, Qt 4.6) means type ids use Qt4 numbering,
-e.g. Float is 135 rather than 38, and floats are written as doubles.
+QVariantMap. Type ids use Qt4 numbering, e.g. Float is 135 rather than 38, and
+floats are written as doubles. That holds for MadMapper 5 (stream version 12)
+and MadMapper 6 (stream version 19, but still Qt4 type ids). A MadMapper 6
+project is a `<name>.madproject` folder with the .mad file inside.
 
 Every value is decoded to a `(type_id, value, is_null)` tuple and maps to lists
 of `(key, variant)` pairs, so a file loaded and saved unchanged comes back
 byte-for-byte identical. Types that are only ever copied (colors, images,
 geometry...) are kept as raw bytes.
 """
+import shutil
 import struct
 from pathlib import Path
 from typing import Any
@@ -102,11 +105,12 @@ class _Reader:
         raise MadFileError(f"unsupported value type {type_id} at offset {start}")
 
     def image(self) -> bytes:
-        # A QImage is a bare PNG with no length prefix, or a 0 int when null.
-        if self.data[self.pos:self.pos + 8] != b"\x89PNG\r\n\x1a\n":
-            return self.take(4)
+        # A QImage is a 0 int when null, else a 1 int and a PNG with no length prefix.
         start = self.pos
-        self.pos += 8
+        if self.u32() == 0:
+            return self.data[start:self.pos]
+        if self.take(8) != b"\x89PNG\r\n\x1a\n":
+            raise MadFileError(f"image at offset {start} is not a PNG")
         while True:
             length = self.u32()
             chunk_type = self.take(4)
@@ -121,7 +125,7 @@ class _Reader:
         if name == b"MadColor\x00":
             self.qstring()  # color spec, e.g. "rgb"
             self.take(4 * 8)
-        elif name == b"QVector<float>\x00":
+        elif name in (b"QVector<float>\x00", b"QList<float>\x00"):  # MadMapper 5, 6
             self.take(8 * self.u32())
         elif name == b"FilePath\x00":
             self.qstring()
@@ -249,3 +253,42 @@ def to_plain(var: Variant) -> Any:
     if type_id == T_LIST:
         return [to_plain(item) for item in value]
     return value
+
+
+def mad_file_in(project_path: Path) -> Path:
+    """The .mad file of a project: the path itself, or the one in a .madproject folder."""
+    if project_path.is_dir():
+        candidates = sorted(project_path.glob("*.mad"))
+        preferred = project_path / f"{project_path.stem}.mad"
+        if preferred in candidates:
+            return preferred
+        if len(candidates) == 1:
+            return candidates[0]
+        raise MadFileError(f"can't tell which .mad file in {project_path} is the project")
+    return project_path
+
+
+def output_path_for(project_path: Path, suffix: str) -> Path:
+    """Where a modified copy goes: `<name><suffix>.mad` or `<name><suffix>.madproject`."""
+    return project_path.with_name(f"{project_path.stem}{suffix}{project_path.suffix}")
+
+
+def save_project(project: MadProject, source: Path, output: Path) -> Path:
+    """Save `project`, loaded from `source`, as `output`; returns the .mad written.
+
+    A MadMapper 6 `.madproject` folder is copied whole (shaders, materials...,
+    but not its backups) and its .mad renamed to match the new folder, as
+    MadMapper names it.
+    """
+    if not source.is_dir():
+        project.save(output)
+        return output
+    if output.exists():
+        raise MadFileError(f"{output} already exists")
+    shutil.copytree(source, output, ignore=shutil.ignore_patterns("Backup"))
+    old_mad = output / mad_file_in(source).name
+    new_mad = output / f"{output.stem}.mad"
+    old_mad.unlink()
+    set_value(project.root, "projectPath", (T_STRING, output.resolve().as_posix(), 0))
+    project.save(new_mad)
+    return new_mad

@@ -82,13 +82,21 @@ def test_project_survives_save_and_load_unchanged():
         ("nullString", (T_STRING, None, 1)),
         ("files", (T_STRINGLIST, ["a.mp4", "ñ.png"], 0)),
         ("color", (T_USER, (b"MadColor\x00", b"\x00\x00\x00\x06\x00r\x00g\x00b" + b"\x00" * 32), 0)),
-        ("thumbnail", (T_IMAGE, png(), 0)),
+        ("thumbnail", (T_IMAGE, b"\x00\x00\x00\x01" + png(), 0)),  # flag, then the PNG
+        ("noThumbnail", (T_IMAGE, b"\x00\x00\x00\x00", 0)),
+        ("curve", (T_USER, (b"QList<float>\x00", b"\x00\x00\x00\x01" + b"?\xf0" + b"\x00" * 6), 0)),
         ("nested", (T_LIST, [(T_MAP, [("name", string("Muñecas"))], 0)], 0)),
     ])
     data = mad.to_bytes()
     reloaded = MadProject.from_bytes(data)
     assert reloaded.root == mad.root
     assert reloaded.to_bytes() == data
+
+
+def test_image_without_png_after_its_flag_is_an_error():
+    mad = MadProject(12, [("thumbnail", (T_IMAGE, b"\x00\x00\x00\x01not a png", 0))])
+    with pytest.raises(MadFileError):
+        MadProject.from_bytes(mad.to_bytes())
 
 
 def test_rejects_files_that_are_not_madmapper_projects():
@@ -195,3 +203,47 @@ def test_patched_project_saves_and_reloads(tmp_path):
     path = tmp_path / "show.mad"
     mad.save(path)
     assert triggers(MadProject.load(path)) == [("/cues/Show/cues/by_name/Blackout", "/midiin/all/1/C#-2")]
+
+
+def timeline_project(*names):
+    slots = [
+        (T_MAP, [("scene", (T_BOOL, False, 0)), ("timeline", (T_MAP, [("name", string(n))], 0))], 0)
+        for n in names
+    ] + [(T_MAP, [], 0)]
+    return MadProject(19, [
+        ("mappings", (T_LIST, [], 0)),
+        ("timelineBanks", (T_MAP, [("timelineBanks", (T_LIST, [(T_MAP, [
+            ("bank_name", string("Musical")),
+            ("timelines", (T_LIST, slots, 0)),
+        ], 0)], 0))], 0)),
+    ])
+
+
+def test_madmapper_6_timelines_are_listed_as_cues():
+    mad = timeline_project("Intro", "Blackout")
+    assert list_cues(mad) == [Cue("Musical", "Intro", timeline=True), Cue("Musical", "Blackout", timeline=True)]
+    assert Cue("Musical", "Intro", timeline=True).url == "/timelines/Musical/by_name/Intro/play_from_beginning"
+
+
+def test_madmapper_6_timeline_gets_a_trigger_in_madmapper_6_key_order():
+    mad = timeline_project("Intro")
+    report = patch_cue_triggers(mad, [Effect(id="Intro", name="Intro", note=60, channel=0)])
+
+    assert triggers(mad) == [("/timelines/Musical/by_name/Intro/play_from_beginning", "/midiin/all/1/C3")]
+    assert len(report.patched) == 1
+    settings = get(mad.root, "mappings")[1][1]
+    keys = [key for key, _ in settings[1]]
+    assert keys == sorted(keys)
+    infos = get(settings[1], "channelInfos")[1]
+    assert [key for key, _ in infos] == ["device", "name", "path", "url"]
+    curve = get(get(settings[1], "curveSettings")[1], "curve")[1]
+    assert curve[0] == b"QList<float>\x00"
+
+
+def test_madmapper_6_existing_timeline_trigger_is_replaced():
+    mad = timeline_project("Intro")
+    get(mad.root, "mappings")[1].extend(
+        trigger("/timelines/Musical/by_name/Intro/play_from_beginning", "/midiin/all/1/C-2")
+    )
+    patch_cue_triggers(mad, [Effect(id="Intro", name="Intro", note=2, channel=0)])
+    assert triggers(mad) == [("/timelines/Musical/by_name/Intro/play_from_beginning", "/midiin/all/1/D-2")]
