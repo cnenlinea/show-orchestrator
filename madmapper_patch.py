@@ -6,11 +6,24 @@ from show_orchestrator.madfile import (
 )
 from show_orchestrator.audio import DEFAULT_SILENCE_DB
 from show_orchestrator.madmapper import (
-    DEFAULT_DEVICE, CueMatchError, fades_to_audio, note_name, patch_cue_triggers,
+    DEFAULT_DEVICE, CueMatchError, fades_to_audio, list_cues, normalize_name,
+    note_name, patch_cue_triggers, set_trigger_fade, trigger_fade,
 )
 from show_orchestrator.models import EffectType
 from show_orchestrator.notes import assign_missing_notes, lock_path_for
 from show_orchestrator.parser import Parser
+
+
+def parse_fade(text: str) -> tuple[str, float]:
+    """`NAME=SECONDS` for --fade."""
+    name, sep, seconds = text.rpartition("=")
+    try:
+        value = float(seconds)
+    except ValueError:
+        value = -1.0
+    if not sep or not name.strip() or value < 0:
+        raise argparse.ArgumentTypeError(f"expected CUE=SECONDS (e.g. \"0. Triumph=0.2\"), not {text!r}")
+    return name.strip(), value
 
 
 def main():
@@ -76,6 +89,19 @@ def main():
     )
 
     arg_parser.add_argument(
+        "--fade",
+        dest="fades",
+        action="append",
+        type=parse_fade,
+        default=[],
+        metavar="CUE=SECONDS",
+        help=(
+            "Set a cue's fade, e.g. --fade \"0. Triumph=0.2\"; repeat for several.\n"
+            "Applied last, so it wins over --fades-from-audio."
+        )
+    )
+
+    arg_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Report what would change without saving anything."
@@ -136,6 +162,19 @@ def main():
                 old = "" if result.old_fade is None else f" {result.old_fade:g} s"
                 print(f"  {result.cue.name:<30} kept{old}: {result.reason}")
         print(f"{len(changed)} fades set.")
+
+    if args.fades:
+        print("\nFades set by hand:")
+        cues = list_cues(project)
+        for name, seconds in args.fades:
+            matching = [cue for cue in cues if normalize_name(cue.name) == normalize_name(name)]
+            if not matching:
+                arg_parser.error(f"--fade: no cue named {name!r}; nothing saved")
+            for cue in matching:
+                old = trigger_fade(project, cue)
+                set_trigger_fade(project, cue, seconds)
+                old_text = "unset" if old is None else f"{old:g} s"
+                print(f"  {cue.name:<30} fade {old_text} -> {seconds:g} s")
 
     if args.dry_run:
         print("Dry run: nothing saved.")

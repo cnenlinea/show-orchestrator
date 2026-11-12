@@ -1,3 +1,4 @@
+import argparse
 import math
 import struct
 import wave
@@ -376,3 +377,12 @@ def test_fades_follow_the_silence_after_each_cue(tmp_path):
         assert results[name].fade is None
         assert reason in results[name].reason
         assert trigger_fade(mad, cues[name]) == 1.0
+
+
+def test_fade_option_takes_a_cue_name_and_seconds():
+    from madmapper_patch import parse_fade
+    assert parse_fade("0. Triumph=0.2") == ("0. Triumph", 0.2)
+    assert parse_fade("A = B=1") == ("A = B", 1.0)  # the last '=' splits
+    for bad in ("Triumph", "=1", "Triumph=fast", "Triumph=-1"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            parse_fade(bad)

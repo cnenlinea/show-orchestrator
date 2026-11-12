@@ -122,6 +122,7 @@ Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes th
 | `--fades-from-audio` | Fade each cue in over the silence after it in its song's audio |
 | `--silence-threshold DB` | With `--fades-from-audio`, audio quieter than this counts as silence (default −40 dBFS) |
 | `--dry-run` | Print the report without saving |
+| `--fade CUE=SECONDS` | Set a cue's fade by hand, e.g. `--fade "0. Triumph=0.2"` to land on a hit; repeat for several. Wins over `--fades-from-audio` |
 | `--no-note-lock` | Ignore the note lock file |
 
 MadMapper names notes from `C-2` = 0 (so note 60 is `C3`) and numbers channels from 1, so effect channel 0 shows up as `Midi 1`. The `.mad` reader/writer is [show_orchestrator/madfile.py](show_orchestrator/madfile.py); a project loaded and saved unchanged comes back byte-for-byte identical.
