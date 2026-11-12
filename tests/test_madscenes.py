@@ -377,3 +377,70 @@ def test_scene_csv_paths_are_relative_to_the_csv_and_media_is_optional(tmp_path)
         ("Tap", None),
         ("Outro", Path("C:/abs/outro.png")),
     ]
+
+
+def mm6_shared_project(slots=4):
+    """Current MadMapper 6: one shared timeline list and registry; bank grids hold uids."""
+    conductor = (T_MAP, [
+        ("scene", (T_BOOL, False, 0)),
+        ("timeline", (T_MAP, [("name", string("conductor")), ("uid", (T_INT, 25, 0))], 0)),
+        ("uid", (T_INT, 25, 0)),
+    ], 0)
+    return MadProject(25, [
+        *surface_lists(),
+        ("visuals", (T_MAP, [("visuals", (T_LIST, [], 0))], 0)),
+        ("timelineBanks", (T_MAP, [
+            ("activeTimelineBank", string("Show")),
+            ("attributeRegistryMap", (T_MAP, [], 0)),
+            ("timelineBanks", (T_LIST, [(T_MAP, [
+                ("bank_name", string("Show_Conductor")),
+                ("is_conductor", (T_BOOL, True, 0)),
+                ("timelines", (T_LIST, [(T_INT, 25, 0)], 0)),
+            ], 0), (T_MAP, [
+                ("bank_name", string("Show")),
+                ("is_conductor", (T_BOOL, False, 0)),
+                ("timelines", (T_LIST, [(T_INT, -1, 0)] * slots, 0)),
+            ], 0)], 0)),
+            ("timelines", (T_LIST, [conductor], 0)),
+        ], 0)),
+    ])
+
+
+def test_current_mm6_timelines_join_the_shared_list_and_the_bank_holds_their_uids(media):
+    mad = mm6_shared_project()
+    scaffold_scenes(mad, [Scene("Intro", media / "a.png"), Scene("Storm", media / "b.mp4")],
+                    "Template", fade=2.0, blackout="Blackout")
+
+    container = to_plain(get(mad.root, "timelineBanks"))
+    assert container["timelineBanks"][0]["timelines"] == [25]  # the conductor bank is untouched
+    assert container["timelineBanks"][1]["timelines"] == [26, 27, 28, -1]  # after the conductor's 25
+    timelines = {t["uid"]: t for t in container["timelines"]}
+    assert [timelines[uid]["timeline"]["name"] for uid in (25, 26, 27, 28)] == \
+        ["conductor", "Intro", "Storm", "Blackout"]
+    intro = timelines[26]
+    assert intro["timeline"]["uid"] == 26
+    assert intro["timeline"]["transition_settings"] == {"d": 2.0, "tr": {"tp": 1}}
+    assert tracks(intro, container) == [("/surfaces/5/visible", True), ("/surfaces/7/visible", False)]
+    assert tracks(timelines[27], container)[2:] == [
+        ("/media/2/play_mode", "Forward"), ("/media/2/position_sec", 0.0),
+    ]
+    assert "attributeRegistryMap" not in container["timelineBanks"][1]
+    assert MadProject.from_bytes(mad.to_bytes()).root == mad.root
+
+
+def test_current_mm6_names_and_free_slots_come_from_the_shared_list(media):
+    mad = mm6_shared_project(slots=2)
+    container = get(mad.root, "timelineBanks")[1]
+    get(container, "timelines")[1].append((T_MAP, [
+        ("scene", (T_BOOL, False, 0)),
+        ("timeline", (T_MAP, [("name", string("Intro")), ("uid", (T_INT, 40, 0))], 0)),
+        ("uid", (T_INT, 40, 0)),
+    ], 0))
+    get(get(container, "timelineBanks")[1][1][1], "timelines")[1][0] = (T_INT, 40, 0)
+
+    with pytest.raises(ScaffoldError, match="already has a timeline named 'Intro'"):
+        scaffold_scenes(mad, [Scene("Intro", media / "a.png")], "Template")
+    with pytest.raises(ScaffoldError, match="1 free slots for 2 timelines"):
+        scaffold_scenes(mad, [Scene("Storm", media / "a.png")], "Template", blackout="Blackout")
+    scaffold_scenes(mad, [Scene("Storm", media / "a.png")], "Template")
+    assert to_plain(get(mad.root, "timelineBanks"))["timelineBanks"][1]["timelines"] == [40, 41]

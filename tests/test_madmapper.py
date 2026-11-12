@@ -1,4 +1,6 @@
+import math
 import struct
+import wave
 import zlib
 from copy import deepcopy
 
@@ -9,10 +11,10 @@ from show_orchestrator.madfile import (
     T_STRING, T_STRINGLIST, T_USER, MadFileError, MadProject, get, to_plain,
 )
 from show_orchestrator.madmapper import (
-    DEFAULT_TRIGGER_SETTINGS, Cue, CueMatchError, list_cues, note_name,
-    patch_cue_triggers,
+    DEFAULT_TRIGGER_SETTINGS, Cue, CueMatchError, fades_to_audio, list_cues,
+    note_name, patch_cue_triggers, set_trigger_fade, trigger_fade,
 )
-from show_orchestrator.models import Effect
+from show_orchestrator.models import AudioTrack, Effect, EffectType, Event, Show
 
 
 def string(text):
@@ -247,3 +249,130 @@ def test_madmapper_6_existing_timeline_trigger_is_replaced():
     )
     patch_cue_triggers(mad, [Effect(id="Intro", name="Intro", note=2, channel=0)])
     assert triggers(mad) == [("/timelines/Musical/by_name/Intro/play_from_beginning", "/midiin/all/1/D-2")]
+
+
+# Current MadMapper 6 keeps every timeline in one shared list, conductor
+# included; a bank's grid holds their uids (-1 empty).
+def shared_timeline_project(*names, fade=1.0):
+    def entry(uid, name):
+        return (T_MAP, [
+            ("scene", (T_BOOL, False, 0)),
+            ("timeline", (T_MAP, [
+                ("name", string(name)),
+                ("transition_settings", (T_MAP, [
+                    ("d", (T_DOUBLE, fade, 0)),
+                    ("tr", (T_MAP, [("tp", (T_INT, 1, 0))], 0)),
+                ], 0)),
+                ("uid", (T_INT, uid, 0)),
+            ], 0)),
+            ("uid", (T_INT, uid, 0)),
+        ], 0)
+    timelines = [entry(25, "conductor")] + [entry(26 + i, n) for i, n in enumerate(names)]
+    slots = [(T_INT, 26 + i, 0) for i in range(len(names))] + [(T_INT, -1, 0)] * 2
+    return MadProject(25, [
+        ("mappings", (T_LIST, [], 0)),
+        ("timelineBanks", (T_MAP, [
+            ("activeTimelineBank", string("Musical")),
+            ("attributeRegistryMap", (T_MAP, [], 0)),
+            ("timelineBanks", (T_LIST, [(T_MAP, [
+                ("bank_name", string("Musical")),
+                ("is_conductor", (T_BOOL, False, 0)),
+                ("timelines", (T_LIST, slots, 0)),
+            ], 0), (T_MAP, [
+                ("bank_name", string("Musical_Conductor")),
+                ("is_conductor", (T_BOOL, True, 0)),
+                ("timelines", (T_LIST, [(T_INT, 25, 0)], 0)),
+            ], 0)], 0)),
+            ("timelines", (T_LIST, timelines, 0)),
+        ], 0)),
+    ])
+
+
+def test_current_madmapper_6_timelines_are_listed_without_the_conductor():
+    mad = shared_timeline_project("Intro", "Blackout")
+    assert list_cues(mad) == [
+        Cue("Musical", "Intro", timeline=True, shared=True),
+        Cue("Musical", "Blackout", timeline=True, shared=True),
+    ]
+    assert Cue("Musical", "Intro", timeline=True, shared=True).url == \
+        "/show/Musical/by_name/Intro/play_from_beginning"
+
+
+def test_current_madmapper_6_trigger_targets_the_show_and_replaces_the_old_one():
+    mad = shared_timeline_project("Intro", "Blackout")
+    get(mad.root, "mappings")[1].extend(
+        trigger("/show/Musical/by_name/Intro/play_from_beginning", "/midiin/all/1/C-2")
+        + trigger("/show/Musical/by_name/Blackout/play_from_beginning", "/key/all/q")
+    )
+    patch_cue_triggers(mad, [Effect(id="Intro", name="Intro", note=8, channel=0)])
+    assert triggers(mad) == [
+        ("/show/Musical/by_name/Blackout/play_from_beginning", "/key/all/q"),
+        ("/show/Musical/by_name/Intro/play_from_beginning", "/midiin/all/1/G#-2"),
+    ]
+
+
+@pytest.mark.parametrize("make, cue", [
+    (lambda: shared_timeline_project("Intro"), Cue("Musical", "Intro", timeline=True, shared=True)),
+    (lambda: timeline_project("Intro"), Cue("Musical", "Intro", timeline=True)),
+    (lambda: project([bank("Show", "Intro")]), Cue("Show", "Intro")),
+])
+def test_trigger_fade_is_read_and_set_in_every_layout(make, cue):
+    mad = make()
+    set_trigger_fade(mad, cue, 2.5)
+    assert trigger_fade(mad, cue) == 2.5
+    assert trigger_fade(MadProject.from_bytes(mad.to_bytes()), cue) == 2.5
+
+
+def test_setting_a_fade_changes_only_that_trigger():
+    mad = shared_timeline_project("Intro", "Blackout")
+    set_trigger_fade(mad, Cue("Musical", "Intro", timeline=True, shared=True), 5.6)
+    assert trigger_fade(mad, Cue("Musical", "Blackout", timeline=True, shared=True)) == 1.0
+    assert trigger_fade(mad, Cue("Musical", "Missing", timeline=True, shared=True)) is None
+
+
+def wav(path, silence, tone, rate=44100):
+    """A mono WAV: `silence` seconds of silence, then `tone` seconds of a loud 440 Hz tone."""
+    samples = [0] * int(silence * rate) + [
+        int(16000 * math.sin(2 * math.pi * 440 * i / rate)) for i in range(int(tone * rate))
+    ]
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        out.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+    return str(path)
+
+
+def test_fades_follow_the_silence_after_each_cue(tmp_path):
+    def song(name, file, *cues):
+        return AudioTrack(name=name, duration="0:10", file_path=file, events={
+            EffectType.PROJECTION: [Event(timestamp=t, effect_id=e) for t, e in cues],
+        })
+
+    quiet_start = wav(tmp_path / "quiet.wav", silence=2.0, tone=3.0)
+    loud_start = wav(tmp_path / "loud.wav", silence=0.0, tone=3.0)
+    (tmp_path / "notes.txt").write_text("not audio")
+    show = Show(
+        audio_tracks=[
+            song("Quiet", quiet_start, (0, "Quiet"), (0.5, "Late"), (4.5, "Blackout")),
+            song("Loud", loud_start, (0, "Loud"), (2.5, "Blackout")),
+            song("Silent", None, (0, "Silent")),
+            song("Broken", str(tmp_path / "notes.txt"), (0, "Broken")),
+        ],
+        effects={EffectType.PROJECTION: []},
+    )
+    names = ["Quiet", "Late", "Loud", "Silent", "Broken", "Blackout"]
+    mad = shared_timeline_project(*names)
+    cues = {n: Cue("Musical", n, timeline=True, shared=True) for n in names}
+    patched = [(n, cues[n], i, 0) for i, n in enumerate(names)]
+
+    results = {r.effect_id: r for r in fades_to_audio(mad, show, patched)}
+
+    assert results["Quiet"].fade == 2.0 and results["Quiet"].old_fade == 1.0
+    assert results["Late"].fade == 1.5  # the silence left after a cue at 0:00.5
+    assert trigger_fade(mad, cues["Quiet"]) == 2.0
+    for name, reason in [("Loud", "already audible at 0:00.000"), ("Silent", "no audio file"),
+                         ("Broken", "can't decode"), ("Blackout", "fires 2 times")]:
+        assert results[name].fade is None
+        assert reason in results[name].reason
+        assert trigger_fade(mad, cues[name]) == 1.0

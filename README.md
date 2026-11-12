@@ -104,20 +104,23 @@ Opens a small Tk window listing every effect with its assigned MIDI note and cha
 
 ```console
 python madmapper_patch.py shows/castillo/castillo_afuera_a.csv path/to/Castillo.mad
-python madmapper_patch.py shows/musical/musical_2026.csv path/to/Musical2026.madproject
+python madmapper_patch.py shows/musical_2026/musical_2026.csv path/to/Musical2026.madproject --fades-from-audio
 ```
 
-Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes them into the project file: every MadMapper cue named like a `projection` effect gets a trigger on that effect's note and channel — the same notes the generated MIDI files play, note lock included. In MadMapper 6, which replaced cues with timelines, the same goes for timelines: the trigger plays the timeline from the beginning. The result is saved as a new project next to the original, `<project>_midi.mad` or a copied `<project>_midi.madproject` folder (or `-o`); the original is never overwritten. Close the project in MadMapper first, so the file on disk is up to date.
+Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes them into the project file: every MadMapper cue named like a `projection` effect gets a trigger on that effect's note and channel — the same notes the generated MIDI files play, note lock included. In MadMapper 6, which replaced cues with timelines, the same goes for timelines: the trigger plays the timeline from the beginning. Both the early MadMapper 6 project layout and the current one (timelines in one shared list, triggers on `/show/<bank>/…`) are supported; conductor banks are skipped. The result is saved as a new project next to the original, `<project>_midi.mad` or a copied `<project>_midi.madproject` folder (or `-o`); the original is never overwritten. Close the project in MadMapper first, so the file on disk is up to date.
 
 - Names match ignoring case, accents and extra spaces (`Muñecas BG` ↔ `munecas bg`). A YAML effect matches by `name`, or by `id` when the name matches no cue.
 - A matched cue's existing note triggers are replaced. Its CC triggers, cues that match no effect, and every other mapping (e.g. a CC driving opacity) are left as they are.
 - The output lists what was set, effects with no cue of the same name, and cues that were left alone — rename one side to make them match.
+- With `--fades-from-audio`, a cue fades in over the silence that follows it in its song, so the picture arrives with the music: a song that opens with 5.6 s of silence gets a 5.6 s fade (to a tenth of a second). Only cues whose effect fires once in the show, at a moment the song's audio is silent, change; an effect used several times (a blackout), a song without audio, or music already playing when the cue fires keeps its fade, and the output says why. Audio is decoded with miniaudio: MP3, WAV, FLAC and Ogg Vorbis (not M4A).
 
 | Option | Purpose |
 | --- | --- |
 | `-o`, `--output` | Where to save the patched project |
 | `--type TYPE` | Effect type to map (default `projection`); repeat for several |
 | `--device NAME` | MadMapper MIDI input to listen on (default `all`, any input) |
+| `--fades-from-audio` | Fade each cue in over the silence after it in its song's audio |
+| `--silence-threshold DB` | With `--fades-from-audio`, audio quieter than this counts as silence (default −40 dBFS) |
 | `--dry-run` | Print the report without saving |
 | `--no-note-lock` | Ignore the note lock file |
 
@@ -145,7 +148,7 @@ Storm,media/storm.png
 Tap,
 ```
 
-It works with MadMapper 5 `.mad` files and MadMapper 6 `.madproject` folders, and saves a copy next to the original — `<name>_scenes.mad`, or a copied `<name>_scenes.madproject` folder (or `-o`). Close the project in MadMapper first. Name the scenes like the show's projection effects and `madmapper_patch.py` can then give each trigger its MIDI note.
+It works with MadMapper 5 `.mad` files and MadMapper 6 `.madproject` folders, early and current, and saves a copy next to the original — `<name>_scenes.mad`, or a copied `<name>_scenes.madproject` folder (or `-o`). Close the project in MadMapper first. Name the scenes like the show's projection effects and `madmapper_patch.py` can then give each trigger its MIDI note.
 
 | Option | Purpose |
 | --- | --- |
@@ -255,8 +258,10 @@ show_orchestrator/
   editor.py                  show file ⇄ the document the web editor works on
   generator.py               Show → .mid files (mido)
   madfile.py                 MadMapper .mad reader/writer (Qt QDataStream)
+  madbanks.py                where cues/timelines live in each MadMapper version
   madmapper.py               effects → MadMapper cue MIDI triggers
   madscenes.py               scenes → MadMapper groups, quads, cues/timelines
+  audio.py                   when a song becomes audible (fades from silence)
   backends/reaper.py         Show + .mid files → .rpp (reathon)
 tests/                       pytest suite
 shows/                       real show definitions + media (git-ignored)

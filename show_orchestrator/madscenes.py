@@ -35,6 +35,7 @@ from show_orchestrator.madfile import (
     T_STRING, T_TRANSFORM, T_UINT, T_ULONGLONG, T_USER, T_BYTEARRAY, T_COLOR,
     T_POINTF, MadProject, Variant, VariantMap, get, set_value,
 )
+from show_orchestrator.madbanks import TriggerBanks, timeline_transition
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp", ".tga"}
 MOVIE_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg", ".wmv"}
@@ -138,9 +139,10 @@ class _Project:
 
     def __init__(self, project: MadProject) -> None:
         self.root = project.root
-        self.is_mm6 = get(self.root, "timelineBanks") is not None
-        if not self.is_mm6 and get(self.root, "cueBanksV4") is None:
+        self.banks = TriggerBanks(self.root)
+        if self.banks.layout is None:
             raise ScaffoldError("the project has neither cue banks nor timeline banks")
+        self.is_mm6 = self.banks.is_mm6
         # MadMapper 5 writes map keys in descending order, MadMapper 6 ascending.
         self.ascending = self.is_mm6
         self.surfaces = get(self.root, "surfaces")[1]
@@ -344,42 +346,18 @@ class _Project:
     # -- trigger banks ----------------------------------------------------------
 
     def bank(self, name: str | None) -> VariantMap:
-        if self.is_mm6:
-            container = get(self.root, "timelineBanks")[1]
-            banks = get(container, "timelineBanks")[1]
-            active = _value(get(container, "activeTimelineBank"))
-        else:
-            container = get(self.root, "cueBanksV4")[1]
-            banks = get(container, "cueBanks")[1]
-            active = _value(get(container, "activeCueBank"))
-        wanted = name or active
-        for bank in banks:
-            if _value(get(bank[1], "bank_name")) == wanted:
-                return bank[1]
-        if name is None and banks:
-            return banks[0][1]
-        names = ", ".join(repr(_value(get(b[1], "bank_name"))) for b in banks)
-        raise ScaffoldError(f"no bank named {wanted!r}; the project has {names}")
+        bank = self.banks.bank(name)
+        if bank is None:
+            names = ", ".join(repr(self.banks.bank_name(b)) for b in self.banks.banks)
+            raise ScaffoldError(f"no bank named {name!r}; the project has {names}")
+        return bank
 
-    def slots(self, bank: VariantMap) -> list[Variant]:
-        return get(bank, "timelines" if self.is_mm6 else "cues")[1]
-
-    def trigger_name(self, slot: Variant) -> str | None:
-        if not slot[1]:
-            return None
-        if self.is_mm6:
-            timeline = get(slot[1], "timeline")
-            return _value(get(timeline[1], "name")) if timeline else None
-        return _value(get(slot[1], "name"))
-
-    def trigger_template(self, slots: list[Variant]) -> Variant | None:
+    def trigger_template(self, bank: VariantMap) -> Variant | None:
         """An existing non-scene cue/timeline to copy settings from."""
-        for slot in slots:
-            if not slot[1]:
-                continue
-            scene_flag = get(slot[1], "scene" if self.is_mm6 else "is_scene_cue")
+        for entry in self.banks.triggers(bank):
+            scene_flag = get(entry[1], "scene" if self.is_mm6 else "is_scene_cue")
             if not _value(scene_flag):
-                return slot
+                return entry
         return None
 
     def cue(self, template: Variant | None, name: str, settings: list[_Setting],
@@ -430,7 +408,7 @@ class _Project:
             timeline = copy.deepcopy(get(template[1], "timeline"))
         else:
             timeline = _default_timeline()
-        registry = get(bank, "attributeRegistryMap")[1]
+        registry = self.banks.registry(bank)
         registered = {key for key, _ in registry}
         tracks = []
         for setting in settings:
@@ -461,30 +439,12 @@ class _Project:
         set_value(pairs, "clips", (T_LIST, [], 0))
         set_value(pairs, "markers", (T_LIST, [], 0))
         if fade is not None or get(pairs, "transition_settings") is None:
-            set_value(pairs, "transition_settings", _timeline_transition(1.0 if fade is None else fade))
+            set_value(pairs, "transition_settings", timeline_transition(1.0 if fade is None else fade))
         return _qmap([
             ("scene", (T_BOOL, False, 0)),
             ("timeline", timeline),
             ("uid", (T_INT, uid, 0)),
         ], True)
-
-    def timeline_uids(self) -> set[int]:
-        container = get(self.root, "timelineBanks")[1]
-        uids = set()
-        for bank in get(container, "timelineBanks")[1]:
-            conductor = get(bank[1], "conductor")
-            for slot in get(bank[1], "timelines")[1] + ([conductor] if conductor else []):
-                uid = get(slot[1], "uid") if slot[1] else None
-                if uid is not None:
-                    uids.add(uid[1])
-        return uids
-
-
-def _timeline_transition(duration: float) -> Variant:
-    return _qmap([
-        ("d", (T_DOUBLE, duration, 0)),
-        ("tr", _qmap([("tp", (T_INT, 1, 0))], True)),
-    ], True)
 
 
 def _default_timeline() -> Variant:
@@ -529,7 +489,7 @@ def _default_timeline() -> Variant:
             ("timeCodeOffset", (T_DOUBLE, 0.0, 0)),
         ], True)),
         ("tracks", (T_LIST, [], 0)),
-        ("transition_settings", _timeline_transition(1.0)),
+        ("transition_settings", timeline_transition(1.0)),
         ("uid", (T_INT, 0, 0)),
     ], True)
 
@@ -567,10 +527,10 @@ def scaffold_scenes(
     template_group, template_surfaces = mad.template(template)
     bank = mad.bank(bank_name)
     report.bank = _value(get(bank, "bank_name"))
-    slots = mad.slots(bank)
+    slots = mad.banks.slots(bank)
 
     taken_surfaces = mad.surface_names()
-    taken_triggers = {mad.trigger_name(slot) for slot in slots}
+    taken_triggers = {mad.banks.name(entry) for entry in mad.banks.triggers(bank)}
     for scene in scenes:
         new_names = [scene.name] + [
             f"{scene.name} - {_value(get(s[1], 'name'))}" for s in template_surfaces
@@ -583,7 +543,7 @@ def scaffold_scenes(
     for name in names:
         if name in taken_triggers:
             raise ScaffoldError(f"bank {report.bank!r} already has a {report.trigger_kind} named {name!r}")
-    free_slots = [i for i, slot in enumerate(slots) if not slot[1]]
+    free_slots = [i for i, slot in enumerate(slots) if mad.banks.is_free(slot)]
     if len(free_slots) < len(names):
         raise ScaffoldError(
             f"bank {report.bank!r} has {len(free_slots)} free slots for {len(names)} "
@@ -642,12 +602,12 @@ def scaffold_scenes(
             mad.visibility(surface_id, name, False) for surface_id, name in mad.top_level_surfaces()
         ]))
 
-    trigger_template = mad.trigger_template(slots)
-    next_uid = max(mad.timeline_uids(), default=0) + 1 if mad.is_mm6 else 0
+    trigger_template = mad.trigger_template(bank)
+    next_uid = max(mad.banks.uids(), default=0) + 1 if mad.is_mm6 else 0
     for slot_index, (name, settings) in zip(free_slots, triggers):
         if mad.is_mm6:
-            slots[slot_index] = mad.timeline(trigger_template, bank, next_uid, name, settings, fade)
+            mad.banks.put(bank, slot_index, mad.timeline(trigger_template, bank, next_uid, name, settings, fade))
             next_uid += 1
         else:
-            slots[slot_index] = mad.cue(trigger_template, name, settings, fade)
+            mad.banks.put(bank, slot_index, mad.cue(trigger_template, name, settings, fade))
     return report

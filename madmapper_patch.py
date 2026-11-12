@@ -4,8 +4,9 @@ from pathlib import Path
 from show_orchestrator.madfile import (
     MadFileError, MadProject, mad_file_in, output_path_for, save_project,
 )
+from show_orchestrator.audio import DEFAULT_SILENCE_DB
 from show_orchestrator.madmapper import (
-    DEFAULT_DEVICE, CueMatchError, note_name, patch_cue_triggers,
+    DEFAULT_DEVICE, CueMatchError, fades_to_audio, note_name, patch_cue_triggers,
 )
 from show_orchestrator.models import EffectType
 from show_orchestrator.notes import assign_missing_notes, lock_path_for
@@ -57,6 +58,24 @@ def main():
     )
 
     arg_parser.add_argument(
+        "--fades-from-audio",
+        action="store_true",
+        help=(
+            "Fade each cue in over the silence that follows it in its song's audio,\n"
+            "so the picture arrives with the music. Only cues whose effect fires once,\n"
+            "while the audio is silent, change; the others keep their fade."
+        )
+    )
+
+    arg_parser.add_argument(
+        "--silence-threshold",
+        type=float,
+        default=DEFAULT_SILENCE_DB,
+        metavar="DB",
+        help=f"With --fades-from-audio, audio quieter than this counts as silence (default: {DEFAULT_SILENCE_DB:g} dBFS)"
+    )
+
+    arg_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Report what would change without saving anything."
@@ -104,6 +123,20 @@ def main():
             print(f"  {cue.name}")
 
     print(f"\n{len(report.patched)} cue triggers set.")
+
+    if args.fades_from_audio:
+        fades = fades_to_audio(project, show, report.patched, args.silence_threshold)
+        changed = [f for f in fades if f.fade is not None]
+        print(f"\nFades from the audio (silence below {args.silence_threshold:g} dBFS):")
+        for result in changed:
+            old = "unset" if result.old_fade is None else f"{result.old_fade:g} s"
+            print(f"  {result.cue.name:<30} fade {old} -> {result.fade:g} s")
+        for result in fades:
+            if result.fade is None:
+                old = "" if result.old_fade is None else f" {result.old_fade:g} s"
+                print(f"  {result.cue.name:<30} kept{old}: {result.reason}")
+        print(f"{len(changed)} fades set.")
+
     if args.dry_run:
         print("Dry run: nothing saved.")
         return

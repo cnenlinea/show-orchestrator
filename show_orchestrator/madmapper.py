@@ -8,7 +8,9 @@ from 0) and note 1 (MadMapper names notes from C-2 = 0).
 
 MadMapper 6 replaced cues with timelines; a trigger there targets
 `/timelines/<bank>/by_name/<timeline>/play_from_beginning`, which is how
-MadMapper 6 converts a MadMapper 5 cue trigger. Below, "cue" means either.
+MadMapper 6 converts a MadMapper 5 cue trigger, and in current MadMapper 6
+`/show/<bank>/by_name/<timeline>/play_from_beginning` (see madbanks.py).
+Below, "cue" means any of them.
 """
 import copy
 import re
@@ -16,12 +18,17 @@ import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from show_orchestrator.madfile import (
     T_BOOL, T_DOUBLE, T_INT, T_LIST, T_MAP, T_STRING, T_USER,
     MadProject, Variant, get, set_value, to_plain,
 )
-from show_orchestrator.models import Effect
+from show_orchestrator.madbanks import (
+    MM5, MM6, MM6_SHARED, TRIGGER_URL_PREFIXES, TriggerBanks, trigger_url,
+)
+from show_orchestrator.audio import DEFAULT_SILENCE_DB, AudioError, silence_after
+from show_orchestrator.models import Effect, Show
 
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 DEFAULT_DEVICE = "all"
@@ -82,12 +89,15 @@ class Cue:
     bank: str
     name: str
     timeline: bool = False  # a MadMapper 6 timeline rather than a cue
+    shared: bool = False  # in current MadMapper 6's shared timeline list
+
+    @property
+    def layout(self) -> str:
+        return MM6_SHARED if self.shared else MM6 if self.timeline else MM5
 
     @property
     def url(self) -> str:
-        if self.timeline:
-            return f"/timelines/{self.bank}/by_name/{self.name}/play_from_beginning"
-        return f"/cues/{self.bank}/cues/by_name/{self.name}"
+        return trigger_url(self.layout, self.bank, self.name)
 
 
 @dataclass
@@ -114,25 +124,38 @@ def normalize_name(name: str) -> str:
 
 def list_cues(project: MadProject) -> list[Cue]:
     """Every named cue (or MadMapper 6 timeline), bank by bank, in grid order."""
+    banks = TriggerBanks(project.root)
     cues = []
-    cue_banks = get(project.root, "cueBanksV4")
-    if cue_banks is not None:
-        for bank in get(cue_banks[1], "cueBanks")[1]:
-            bank_name = get(bank[1], "bank_name")[1]
-            for cue in get(bank[1], "cues")[1]:
-                name = get(cue[1], "name")
-                if name is not None and name[1]:
-                    cues.append(Cue(bank_name, name[1]))
-    timeline_banks = get(project.root, "timelineBanks")
-    if timeline_banks is not None:
-        for bank in get(timeline_banks[1], "timelineBanks")[1]:
-            bank_name = get(bank[1], "bank_name")[1]
-            for slot in get(bank[1], "timelines")[1]:
-                timeline = get(slot[1], "timeline") if slot[1] else None
-                name = get(timeline[1], "name") if timeline else None
-                if name is not None and name[1]:
-                    cues.append(Cue(bank_name, name[1], timeline=True))
+    for bank in banks.banks:
+        bank_name = banks.bank_name(bank)
+        for entry in banks.triggers(bank):
+            name = banks.name(entry)
+            if name:
+                cues.append(Cue(bank_name, name, timeline=banks.is_mm6,
+                                shared=banks.layout == MM6_SHARED))
     return cues
+
+
+def trigger_entries(project: MadProject, cue: Cue) -> list[Variant]:
+    """The cue or timeline entries `cue` names (one per slot it fills)."""
+    banks = TriggerBanks(project.root)
+    bank = banks.bank(cue.bank)
+    if bank is None:
+        return []
+    return [entry for entry in banks.triggers(bank) if banks.name(entry) == cue.name]
+
+
+def trigger_fade(project: MadProject, cue: Cue) -> float | None:
+    """The transition (fade) time of `cue`, in seconds."""
+    entries = trigger_entries(project, cue)
+    return TriggerBanks(project.root).fade(entries[0]) if entries else None
+
+
+def set_trigger_fade(project: MadProject, cue: Cue, seconds: float) -> None:
+    """Set the transition (fade) time of `cue`, in seconds."""
+    banks = TriggerBanks(project.root)
+    for entry in trigger_entries(project, cue):
+        banks.set_fade(entry, seconds)
 
 
 def _midi_source(settings: Variant) -> re.Match | None:
@@ -213,13 +236,13 @@ def patch_cue_triggers(
         set_value(project.root, "mappings", mappings)
     entries = mappings[1]
 
-    mm6 = get(project.root, "timelineBanks") is not None
+    mm6 = TriggerBanks(project.root).is_mm6
     template = default_trigger_settings(mm6)
     kept: list[Variant] = []
     for i in range(0, len(entries), 2):
         target, settings = entries[i], entries[i + 1]
         source = _midi_source(settings)
-        is_cue_trigger = source is not None and target[1].startswith(("/cues/", "/timelines/"))
+        is_cue_trigger = source is not None and target[1].startswith(TRIGGER_URL_PREFIXES)
         if is_cue_trigger:
             template = settings
         is_note = source is not None and not CC_CONTROL.match(source["control"])
@@ -238,3 +261,69 @@ def patch_cue_triggers(
 
     report.unmatched_cues = [cue for cue in cues if cue not in matches]
     return report
+
+
+MIN_SILENCE_FOR_FADE = 0.25  # seconds; less than this and the music is already playing
+
+
+@dataclass
+class FadeResult:
+    effect_id: str
+    cue: Cue
+    old_fade: float | None
+    fade: float | None  # the fade set, or None when the cue was left as it was
+    reason: str = ""  # why it was left as it was
+
+
+def _clock(seconds: float) -> str:
+    return f"{int(seconds // 60)}:{seconds % 60:06.3f}"
+
+
+def fades_to_audio(
+    project: MadProject,
+    show: Show,
+    patched: Iterable[tuple[str, Cue, int, int]],
+    threshold_db: float = DEFAULT_SILENCE_DB,
+) -> list[FadeResult]:
+    """Fade each patched cue in over the silence that follows it in its song.
+
+    A cue whose effect fires exactly once in the show, at a moment its song's
+    audio is silent (quieter than `threshold_db` dBFS), gets a fade lasting
+    until the audio becomes audible, to a tenth of a second. Every other cue
+    keeps its fade: an effect used several times (e.g. a blackout), a song
+    without audio, or audio already playing when the cue fires.
+    """
+    results = []
+    for effect_id, cue, _note, _channel in patched:
+        old_fade = trigger_fade(project, cue)
+
+        def keep(reason: str) -> None:
+            results.append(FadeResult(effect_id, cue, old_fade, None, reason))
+
+        fired = [
+            (track, event)
+            for track in show.audio_tracks
+            for events in track.events.values()
+            for event in events
+            if event.effect_id == effect_id
+        ]
+        if len(fired) != 1:
+            keep(f"fires {len(fired)} times" if fired else "never fires")
+            continue
+        track, event = fired[0]
+        if not track.file_path:
+            keep(f"song {track.name!r} has no audio file")
+            continue
+        at = event.timestamp_seconds
+        try:
+            silence = silence_after(Path(track.file_path), at, threshold_db)
+        except AudioError as error:
+            keep(str(error))
+            continue
+        if silence < MIN_SILENCE_FOR_FADE:
+            keep(f"{track.name!r} is already audible at {_clock(at)}")
+            continue
+        fade = round(silence, 1)
+        set_trigger_fade(project, cue, fade)
+        results.append(FadeResult(effect_id, cue, old_fade, fade))
+    return results
