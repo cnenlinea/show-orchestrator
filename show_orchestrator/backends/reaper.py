@@ -71,6 +71,9 @@ class ReaperBackend:
             self.project.add(effect_track)
             tracks[effect_type] = effect_track
 
+        # Extra clips with the same name share one REAPER track, e.g. a lights MIDI file per song.
+        extra_tracks_by_name: dict[str, Track] = {}
+
         current_position = 0
         track_index = 0
         for track in show.audio_tracks:
@@ -86,8 +89,11 @@ class ReaperBackend:
 
             if track.extra_tracks:
                 for extra_track in track.extra_tracks:
-                    new_track = Track(name=extra_track.name)
-                    self.project.add(new_track)
+                    new_track = extra_tracks_by_name.get(extra_track.name)
+                    if new_track is None:
+                        new_track = Track(name=extra_track.name)
+                        self.project.add(new_track)
+                        extra_tracks_by_name[extra_track.name] = new_track
                     media = self._copy_media(Path(extra_track.file_path), output_dir)
                     source = self._create_source(media)
                     item = Item(

@@ -173,7 +173,7 @@ Columns: `name,type,timestamp,duration,note,file`
 | --- | --- |
 | `audio` | Starts a new song block. `duration` is required; `file` is the audio file path (optional — a song can be a silent placeholder). |
 | `lights` / `projection` / `homeassistant` | An effect cue in the current song. `timestamp` is when it fires; `duration` is how long the note is held (default 0.1 s); `note` optionally pins a MIDI note. |
-| `extra track` | A pre-rendered `.mid`/audio clip placed on its own REAPER track at `timestamp` within the current song. |
+| `extra track` | A pre-rendered `.mid`/audio clip placed at `timestamp` within the current song, on a REAPER track named after the row. Extra tracks with the same name share one REAPER track, e.g. a `Lights` row in every song puts each song's lights MIDI on a single track. |
 
 Rows with any other `type` (including the header) are ignored. Rows that reuse an effect `name` reuse the same effect (and note). See [example.csv](example.csv).
 
@@ -234,7 +234,7 @@ Deleting the lock re-assigns everything from scratch; `--no-note-lock` skips it 
 
 ## REAPER / show workflow
 
-1. Open the generated `.rpp`. You get one track per effect type (`lights`, `projection`, `homeassistant`), an **Audio Files** track, one track per extra clip, and a marker at the start of each song.
+1. Open the generated `.rpp`. You get one track per effect type (`lights`, `projection`, `homeassistant`), an **Audio Files** track, one track per extra-track name, and a marker at the start of each song.
 2. Route each effect track's MIDI output to a virtual MIDI port (e.g. [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) on Windows): track I/O → MIDI Hardware Output.
 3. Point MadMapper (Cues → MIDI triggers) and QLC+ (Virtual Console / Input profiles) at those ports and map the notes — `madmapper_patch.py` can set the MadMapper cue triggers for you, and the note mapper GUI auditions them.
 4. Press play: audio for the cast, MIDI notes for the machines. Rehearse by scrubbing anywhere in the timeline.

@@ -1,7 +1,7 @@
 import pytest
 
 from show_orchestrator.backends.reaper import ReaperBackend
-from show_orchestrator.models import AudioTrack, Effect, EffectType, Show
+from show_orchestrator.models import AudioTrack, Effect, EffectType, ExtraAudioTrack, Show
 
 
 @pytest.mark.parametrize("file_name, expected", [
@@ -82,6 +82,42 @@ def test_midi_outside_the_project_folder_keeps_an_absolute_path(tmp_path):
     backend.create_project(make_show(), midi_files, output_dir)
     backend.save_project(output_dir / "show.rpp")
     assert f'FILE "{midi_path.resolve()}"' in (output_dir / "show.rpp").read_text()
+
+
+def test_extra_tracks_with_the_same_name_share_a_reaper_track(tmp_path):
+    for name in ("a.mid", "b.mid", "click.mid"):
+        (tmp_path / name).write_bytes(b"")
+
+    def song(name, extras):
+        return AudioTrack(
+            name=name, duration="0:10", events={EffectType.LIGHTS: []},
+            extra_tracks=[
+                ExtraAudioTrack(name=extra, timestamp="0:00", duration="0:10",
+                                file_path=str(tmp_path / file))
+                for extra, file in extras
+            ],
+        )
+
+    show = Show(
+        audio_tracks=[
+            song("One", [("Luces", "a.mid")]),
+            song("Two", [("Luces", "b.mid"), ("Click", "click.mid")]),
+        ],
+        effects={EffectType.LIGHTS: []},
+    )
+    output_dir = tmp_path / "build"
+    output_dir.mkdir()
+    backend = ReaperBackend()
+    backend.create_project(show, {}, output_dir)
+    rpp_path = output_dir / "test.rpp"
+    backend.save_project(rpp_path)
+
+    content = rpp_path.read_text()
+    assert content.count('NAME "Luces"') == 1
+    assert content.count('NAME "Click"') == 1
+    luces = content.split('NAME "Luces"')[1].split("<TRACK")[0]
+    assert 'FILE "a.mid"' in luces and 'FILE "b.mid"' in luces
+    assert "POSITION 10" in luces
 
 
 def test_missing_media_raises(tmp_path):
