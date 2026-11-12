@@ -152,7 +152,10 @@
           </select>
         </label>
         <label>Velocity <input id="velocity" type="number" min="1" max="127" value="{{ default_velocity }}"></label>
-        <label title="Silence between songs, so you can pause before the next song's cues fire">Gap between songs (s) <input id="gap" type="number" min="0" step="0.1" value="{{ default_gap }}"></label>
+        <label title="Silence between songs, so you can pause before the next song's cues fire. Empty: the show's reaper: gap:, else {{ default_gap }} s">Gap between songs (s) <input id="gap" type="number" min="0" step="0.1" placeholder="{{ default_gap }}"></label>
+        <label title="Which machine's MIDI output routing (the show's reaper: routing: profiles) to write into the project">MIDI routing
+          <select id="routing"><option value="">none</option></select>
+        </label>
         <label>Use note lock <input id="note-lock" type="checkbox" checked></label>
         <button id="build" class="primary">Build</button>
       </div>
@@ -303,6 +306,15 @@ function renderShow(show) {
       h("td", {className: "num"}, playButton(effect.note, effect.channel)))));
 }
 
+// The build panel offers the show's own settings: its gap as the placeholder, its routing profiles.
+function showBuildSettings(show) {
+  $("gap").placeholder = show.gap ?? {{ default_gap }};
+  const remembered = localStorage.getItem("routing");
+  $("routing").replaceChildren(h("option", {value: "", textContent: "none"}),
+    ...show.routing_profiles.map((name) => h("option", {value: name, textContent: name})));
+  if (show.routing_profiles.includes(remembered)) $("routing").value = remembered;
+}
+
 async function loadShow() {
   const file = $("show-select").value;
   $("show-error").textContent = "";
@@ -315,6 +327,7 @@ async function loadShow() {
     const show = await api(`/api/show?file=${encodeURIComponent(file)}`);
     assigned = new Map(show.effects.map((effect) => [effectKey(effect), effect]));
     renderShow(show);
+    showBuildSettings(show);
   } catch (err) {
     assigned = new Map();
     $("summary").textContent = "";
@@ -339,6 +352,7 @@ async function build() {
       orchestrate: $("orchestrate").value,
       velocity: $("velocity").value,
       gap: $("gap").value,
+      routing: $("routing").value,
       note_lock: $("note-lock").checked,
     });
     const lines = [`Wrote ${result.midi_files.length} MIDI files to ${result.output_dir}`];
@@ -812,6 +826,7 @@ $("reload").onclick = () => {
 };
 $("refresh-ports").onclick = loadPorts;
 $("port-select").onchange = () => localStorage.setItem("port", $("port-select").value);
+$("routing").onchange = () => localStorage.setItem("routing", $("routing").value);
 $("build").onclick = build;
 
 (async () => {

@@ -5,7 +5,7 @@ from show_orchestrator.checks import check_show
 from show_orchestrator.parser import Parser
 from show_orchestrator.generator import DEFAULT_VELOCITY, MidiGenerator
 from show_orchestrator.notes import lock_path_for
-from show_orchestrator.backends.reaper import DEFAULT_SONG_GAP, ReaperBackend
+from show_orchestrator.backends.reaper import DEFAULT_SONG_GAP, ReaperBackend, reaper_settings
 
 AVAILABLE_BACKENDS = {
     "reaper": ReaperBackend,
@@ -51,11 +51,21 @@ def main():
     arg_parser.add_argument(
         "--gap",
         type=float,
-        default=DEFAULT_SONG_GAP,
+        default=None,
         metavar="SECONDS",
         help=(
             "Silence between one song's end and the next song's start, so the operator\n"
-            f"can pause before the next song's cues fire (default: {DEFAULT_SONG_GAP:g})"
+            "can pause before the next song's cues fire (default: the show's\n"
+            f"reaper: gap:, else {DEFAULT_SONG_GAP:g})"
+        )
+    )
+
+    arg_parser.add_argument(
+        "--routing",
+        metavar="PROFILE",
+        help=(
+            "Route tracks to MIDI outputs with this profile of the show's reaper: routing:\n"
+            "section, one per machine (see reaper_routing.py). Default: no routing."
         )
     )
 
@@ -69,7 +79,7 @@ def main():
     )
 
     args = arg_parser.parse_args()
-    if args.gap < 0:
+    if args.gap is not None and args.gap < 0:
         arg_parser.error("--gap can't be negative")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -77,6 +87,10 @@ def main():
     parser = Parser()
     show_data = parser.load_show(file)
     check_show(show_data)
+    try:
+        gap, routing = reaper_settings(show_data, args.gap, args.routing)
+    except ValueError as error:
+        arg_parser.error(str(error))
 
     lock_path = None if args.no_note_lock else lock_path_for(file)
     midi_generator = MidiGenerator(velocity=args.velocity)
@@ -87,7 +101,7 @@ def main():
         return
 
     orchestrator = AVAILABLE_BACKENDS[args.orchestrate]()
-    orchestrator.create_project(show_data, midi_file_paths, args.output_dir, song_gap=args.gap)
+    orchestrator.create_project(show_data, midi_file_paths, args.output_dir, song_gap=gap, routing=routing)
     orchestrator.save_project(args.output_dir / f"{file.stem}.rpp")
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ import yaml
 from flask import Flask, jsonify, render_template, request
 
 from main import AVAILABLE_BACKENDS
-from show_orchestrator.backends.reaper import DEFAULT_SONG_GAP
+from show_orchestrator.backends.reaper import DEFAULT_SONG_GAP, reaper_settings
 from show_orchestrator.editor import read_document, render_document
 from show_orchestrator.generator import DEFAULT_VELOCITY, MidiGenerator
 from show_orchestrator.models import EffectType, Show
@@ -87,8 +87,12 @@ def describe_show(show: Show, lock_path: Path | None) -> dict:
         })
         position += track.duration_seconds
 
+    reaper = show.reaper
     return {
         "duration": position,
+        # the show's own build settings (YAML reaper: section), for the build panel
+        "gap": reaper.gap if reaper else None,
+        "routing_profiles": list((reaper.routing if reaper else None) or {}),
         "songs": songs,
         "effects": [
             {
@@ -239,12 +243,16 @@ def create_app(root: Path) -> Flask:
             return error("Velocity must be a number")
         if not 1 <= velocity <= 127:
             return error("Velocity must be between 1 and 127")
-        try:
-            gap = float(data.get("gap", DEFAULT_SONG_GAP))
-        except (TypeError, ValueError):
-            return error("The gap between songs must be a number of seconds")
-        if not gap >= 0:  # also refuses NaN
-            return error("The gap between songs can't be negative")
+        gap = data.get("gap")
+        if gap in (None, ""):
+            gap = None  # the show's reaper: gap:, else the default
+        else:
+            try:
+                gap = float(gap)
+            except (TypeError, ValueError):
+                return error("The gap between songs must be a number of seconds")
+            if not gap >= 0:  # also refuses NaN
+                return error("The gap between songs can't be negative")
 
         output_dir = root / (data.get("output_dir") or DEFAULT_OUTPUT_DIR)
         lock_path = lock_path_for(file) if data.get("note_lock", True) else None
@@ -252,12 +260,13 @@ def create_app(root: Path) -> Flask:
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             show_data = Parser().load_show(file)
+            gap, routing = reaper_settings(show_data, gap, data.get("routing") or None)
             midi_files = MidiGenerator(velocity=velocity).generate_midi_files(
                 show_data, output_dir, lock_path
             )
             if backend_name is not None:
                 backend = AVAILABLE_BACKENDS[backend_name]()
-                backend.create_project(show_data, midi_files, output_dir, song_gap=gap)
+                backend.create_project(show_data, midi_files, output_dir, song_gap=gap, routing=routing)
                 project_path = output_dir / f"{file.stem}.rpp"
                 backend.save_project(project_path)
         except SHOW_ERRORS as exc:

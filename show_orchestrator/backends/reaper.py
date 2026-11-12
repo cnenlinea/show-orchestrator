@@ -56,29 +56,42 @@ class ReaperBackend:
         midi_files: dict[str, dict[EffectType, GeneratedMidi]],
         output_dir: Path,
         song_gap: float = DEFAULT_SONG_GAP,
+        routing: dict[str, int] | None = None,
     ) -> None:
         """Build the project; save it into `output_dir` with `save_project`.
 
         Media is copied into `output_dir` and referenced relative to it, so
         the folder can be moved or opened on another machine as a whole.
         Songs follow one another with `song_gap` seconds of silence, and no
-        cues, between them.
+        cues, between them. `routing` gives tracks, by name, their MIDI
+        hardware output (REAPER's MIDIOUT value; see `read_midi_routing`).
         """
         if song_gap < 0:
             raise ValueError(f"The gap between songs can't be negative ({song_gap} s)")
         audio_files_included = any(track.file_path for track in show.audio_tracks)
+        if routing:
+            names = project_track_names(show)
+            unknown = [name for name in routing if name not in names]
+            if unknown:
+                raise ValueError(
+                    f"The routing names tracks the project doesn't have: {', '.join(map(repr, unknown))}; "
+                    f"its tracks are {', '.join(map(repr, names))}"
+                )
 
         tracks = {}
+        named_tracks: list[tuple[str, Track]] = []  # (name, track), for the routing
+
+        def add_track(name: str) -> Track:
+            track = Track(name=name)
+            self.project.add(track)
+            named_tracks.append((name, track))
+            return track
 
         if audio_files_included:
-            audio_track = Track(name="Audio Files")
-            self.project.add(audio_track)
-            tracks["audio"] = audio_track
+            tracks["audio"] = add_track("Audio Files")
 
         for effect_type in show.effects:
-            effect_track = Track(name=effect_type)
-            self.project.add(effect_track)
-            tracks[effect_type] = effect_track
+            tracks[effect_type] = add_track(str(effect_type))
 
         # Extra clips with the same name share one REAPER track, e.g. a lights MIDI file per song.
         extra_tracks_by_name: dict[str, Track] = {}
@@ -100,9 +113,7 @@ class ReaperBackend:
                 for extra_track in track.extra_tracks:
                     new_track = extra_tracks_by_name.get(extra_track.name)
                     if new_track is None:
-                        new_track = Track(name=extra_track.name)
-                        self.project.add(new_track)
-                        extra_tracks_by_name[extra_track.name] = new_track
+                        new_track = extra_tracks_by_name[extra_track.name] = add_track(extra_track.name)
                     media = self._copy_media(Path(extra_track.file_path), output_dir)
                     source = self._create_source(media)
                     item = Item(
@@ -130,5 +141,75 @@ class ReaperBackend:
             track_index += 1
             current_position += track.duration_seconds + song_gap
 
+        for name, reaper_track in named_tracks:
+            if routing and name in routing:
+                reaper_track.props.append(["MIDIOUT", routing[name]])
+
     def save_project(self, project_file_path: Path) -> None:
         self.project.write(project_file_path)
+
+
+def reaper_settings(
+    show: Show, gap: float | None = None, routing_profile: str | None = None,
+) -> tuple[float, dict[str, int] | None]:
+    """The (gap between songs, track routing) to build `show` with.
+
+    A `gap` given here wins over the show's `reaper: gap:`, which wins over
+    DEFAULT_SONG_GAP. `routing_profile` picks one of the show's
+    `reaper: routing:` profiles (one per machine); None routes nothing.
+    """
+    settings = show.reaper
+    if gap is None:
+        gap = settings.gap if settings and settings.gap is not None else DEFAULT_SONG_GAP
+    if not routing_profile:
+        return gap, None
+    profiles = (settings.routing if settings else None) or {}
+    if routing_profile not in profiles:
+        known = ", ".join(map(repr, profiles)) or "none (add a reaper: routing: section)"
+        raise ValueError(f"The show has no routing profile {routing_profile!r}; its profiles: {known}")
+    return gap, profiles[routing_profile]
+
+
+def project_track_names(show: Show) -> list[str]:
+    """The names of the tracks `ReaperBackend.create_project` makes for `show`, in order."""
+    names = ["Audio Files"] if any(track.file_path for track in show.audio_tracks) else []
+    names += [str(effect_type) for effect_type in show.effects]
+    for track in show.audio_tracks:
+        for extra in track.extra_tracks or []:
+            if extra.name not in names:
+                names.append(extra.name)
+    return names
+
+
+def read_midi_routing(rpp_text: str) -> list[tuple[str, int]]:
+    """(track name, MIDI hardware output) of every track in a REAPER project file.
+
+    The output is REAPER's MIDIOUT value, -1 for none. REAPER stores it as an
+    index into the MIDI outputs of the machine's own preferences (with the
+    channel), not a device name, so it is only right on the machine, or one
+    set up alike, where the project was saved.
+    """
+    tracks: list[tuple[str, int]] = []
+    chunks: list[str] = []
+    name, midi_out = None, -1
+    for raw in rpp_text.splitlines():
+        line = raw.strip()
+        if line.startswith("<"):
+            chunks.append(line[1:].split(" ", 1)[0])
+            if chunks == ["REAPER_PROJECT", "TRACK"]:
+                name, midi_out = "", -1
+        elif line == ">":
+            if chunks == ["REAPER_PROJECT", "TRACK"]:
+                tracks.append((name, midi_out))
+            if chunks:
+                chunks.pop()
+        elif chunks == ["REAPER_PROJECT", "TRACK"]:
+            key, _, value = line.partition(" ")
+            if key == "NAME":
+                # REAPER quotes names with spaces with ", or ' / ` when the name holds a "
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'`":
+                    value = value[1:-1]
+                name = value
+            elif key == "MIDIOUT":
+                midi_out = int(value.split()[0])
+    return tracks

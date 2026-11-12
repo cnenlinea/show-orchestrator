@@ -7,6 +7,8 @@ A document is plain JSON-able data, the same shape for CSV and YAML shows:
       "preamble": [[cell, ...], ...],      # CSV rows before the first song (the header)
       "songs": [{"name", "duration", "file", "rows": [row, ...]}],
       "effects": [{"type", "id", "name", "note", "channel"}],
+      "sections": {name: value},           # YAML only: other top-level sections (reaper:,
+      "section_order": [name, ...],        # madmapper:, include:...), kept as they are, in order
     }
 
 where a row is one of
@@ -30,6 +32,7 @@ EFFECT_TYPES = [str(effect_type) for effect_type in EffectType]
 CSV_AUDIO = "audio"
 CSV_EXTRA = "extra track"
 CSV_COLUMNS = 6
+YAML_EDITED = ("audio_tracks", "effects")  # the YAML sections the editor rewrites
 
 
 def read_document(text: str, suffix: str) -> dict:
@@ -238,7 +241,10 @@ def _read_yaml(text: str) -> dict:
             "file": _text(track.get("file_path")),
             "rows": extras + cues,
         })
-    return {"format": "yaml", "preamble": [], "songs": songs, "effects": effects}
+    # Sections the editor doesn't edit (settings, includes) go back into the file unchanged.
+    sections = {key: value for key, value in data.items() if key not in YAML_EDITED}
+    return {"format": "yaml", "preamble": [], "songs": songs, "effects": effects,
+            "sections": sections, "section_order": list(data)}
 
 
 def _yaml_time(text: str) -> str | int | float:
@@ -286,7 +292,15 @@ def _write_yaml(document: dict) -> str:
                 entry[key] = int(effect[key])
         effects.setdefault(effect["type"], []).append(entry)
 
+    edited = {"audio_tracks": tracks, "effects": effects}
+    sections = document.get("sections") or {}
+    order = list(document.get("section_order") or [])
+    order += [key for key in [*edited, *sections] if key not in order]
+    data = {
+        key: edited[key] if key in edited else sections[key]
+        for key in order if key in edited or key in sections
+    }
     return yaml.safe_dump(
-        {"audio_tracks": tracks, "effects": effects},
+        data,
         sort_keys=False, allow_unicode=True, width=1000,
     )

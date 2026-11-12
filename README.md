@@ -53,7 +53,8 @@ Each generated `.mid` carries standard MIDI meta events: a track name, and a mar
 | `-o`, `--output-dir` | Where to write MIDI, media and the project file (default `./build/`) |
 | `--orchestrate BACKEND` | Also build a project file; omit to generate MIDI only |
 | `--velocity N` | Velocity of generated `note_on` messages (default 127) |
-| `--gap SECONDS` | Silence between one song's end and the next song's start (default 0.5), so the operator can pause before the next song's cues fire; `0` butts songs together |
+| `--gap SECONDS` | Silence between one song's end and the next song's start (default: the show's `reaper: gap:`, else 0.5), so the operator can pause before the next song's cues fire; `0` butts songs together |
+| `--routing PROFILE` | Route tracks to MIDI outputs with one of the show's `reaper: routing:` profiles (see [Show settings](#show-settings-yaml-only)) |
 | `--no-note-lock` | Ignore the note lock file — see below |
 
 Cues fire at velocity **127** by default. QLC+ scales note velocity into the input value, so a lower velocity arrives as a partial level rather than a clean trigger; change it with `--velocity` only if your receivers want that.
@@ -120,9 +121,9 @@ Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes th
 | `-o`, `--output` | Where to save the patched project |
 | `--type TYPE` | Effect type to map (default `projection`); repeat for several |
 | `--device NAME` | MadMapper MIDI input to listen on (default `all`, any input) |
-| `--fades-from-audio` | Fade each cue in over the silence after it in its song's audio |
-| `--silence-threshold DB` | With `--fades-from-audio`, audio quieter than this counts as silence (default −40 dBFS) |
-| `--fade CUE=SECONDS` | Set a cue's fade by hand, e.g. `--fade "0. Triumph=0.2"` to land on a hit; repeat for several. Wins over `--fades-from-audio` |
+| `--fades-from-audio` / `--no-fades-from-audio` | Fade each cue in over the silence after it in its song's audio (default: the show's `madmapper: fades_from_audio:`, else off) |
+| `--silence-threshold DB` | With `--fades-from-audio`, audio quieter than this counts as silence (default: the show's setting, else −40 dBFS) |
+| `--fade CUE=SECONDS` | Set a cue's fade by hand, e.g. `--fade "0. Triumph=0.2"` to land on a hit; repeat for several. Adds to the show's `madmapper: fades:`; wins over `--fades-from-audio` |
 | `--dry-run` | Print the report without saving |
 | `--no-note-lock` | Ignore the note lock file |
 
@@ -211,6 +212,36 @@ effects:
 
 YAML gives you more control than CSV: effects are declared in a catalog with explicit `note`/`channel`, so lights and projection can live on separate MIDI channels. See [example.yaml](example.yaml).
 
+#### Show settings (YAML only)
+
+A YAML show can also carry the settings it is built and patched with, so nobody has to remember the flags:
+
+```yaml
+reaper:                     # main.py / the web UI's Build
+  gap: 0.5                  # seconds between songs (--gap)
+  routing:                  # per machine, picked with --routing PROFILE
+    mac:
+      projection: 64        # REAPER track name -> MIDI hardware output
+      Luces: 64
+madmapper:                  # madmapper_patch.py
+  fades_from_audio: true    # --fades-from-audio
+  silence_threshold: -40    # --silence-threshold
+  fades:                    # --fade, per cue
+    0. Triumph: 0.2
+```
+
+A flag (or a filled-in web UI field) wins over the file, and the file over the built-in default; `--no-fades-from-audio` turns off what the file turns on, and `--fade` adds to the file's `fades` (winning for the same cue). Unknown keys in these sections are refused, so a typo can't silently do nothing.
+
+**MIDI routing.** REAPER keeps each track's MIDI hardware output as a number (`MIDIOUT`) that indexes the MIDI devices in *that machine's* REAPER preferences, so routing is per machine and a rebuilt project otherwise comes out unrouted. Route the tracks by hand in REAPER once on each machine, save, and read the routing back as a profile:
+
+```console
+python reaper_routing.py musical_2026_mac.rpp --profile mac --show shows/musical_2026/musical_2026.yaml
+```
+
+It prints a `reaper: routing:` block to paste into the show (and, with `--show`, warns about routed tracks the show's builds don't have). Then build with `--routing mac` (or pick *MIDI routing* in the web UI, which remembers the choice per browser): every routed track gets its output, and naming a track the project doesn't have is an error. Tracks are named `Audio Files`, the effect types (`lights`, `projection`, `homeassistant`) and the extra tracks' names.
+
+The web editor keeps these sections (and `include:`) when it saves a YAML show.
+
 ### Note auto-assignment and the note lock
 
 Effects without a `note` get the lowest MIDI note not already used on their channel (effects without a `channel` default to 0).
@@ -251,6 +282,7 @@ main.py                      CLI entry point
 note_mapper.py               Tk GUI to inspect/audition effect notes
 madmapper_patch.py           CLI: set MadMapper cue MIDI triggers from a show
 madmapper_scenes.py          CLI: scaffold MadMapper scenes (group, quad, trigger)
+reaper_routing.py            CLI: read a machine's MIDI routing from a saved .rpp
 web.py                       Flask web UI: timeline, editor, note audition, build
 templates/index.html         the web UI's single page
 show_orchestrator/

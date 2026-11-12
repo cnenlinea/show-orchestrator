@@ -2,7 +2,7 @@ import re
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel
+from pydantic import AfterValidator, BaseModel, ConfigDict
 
 MMSS_PATTERN = re.compile(r"^\d{1,2}:\d{2}(\.\d+)?$")
 
@@ -104,8 +104,49 @@ class Effect(BaseModel):
     included_from: str | None = None
 
 
+def validate_midi_out(value: int) -> int:
+    if value < -1:
+        raise ValueError(f"a MIDI output is -1 (none) or a REAPER MIDIOUT value from 0, not {value}")
+    return value
+
+
+# REAPER's value for a track's MIDI hardware output, as a saved project's MIDIOUT line holds it
+MidiOut = Annotated[int, AfterValidator(validate_midi_out)]
+
+
+def validate_not_negative(value: float) -> float:
+    if value < 0:
+        raise ValueError(f"must not be negative, not {value}")
+    return value
+
+
+Seconds = Annotated[float, AfterValidator(validate_not_negative)]
+
+
+class ReaperSettings(BaseModel):
+    """`reaper:` in a YAML show: how the REAPER project is built (main.py flags override)."""
+    model_config = ConfigDict(extra="forbid")
+
+    # seconds of silence between songs (--gap)
+    gap: Seconds | None = None
+    # per machine (profile name, picked with --routing): REAPER track name -> MIDI
+    # hardware output, as reaper_routing.py reads it from a project saved on that machine
+    routing: dict[str, dict[str, MidiOut]] | None = None
+
+
+class MadMapperSettings(BaseModel):
+    """`madmapper:` in a YAML show: how madmapper_patch.py patches (its flags override)."""
+    model_config = ConfigDict(extra="forbid")
+
+    fades_from_audio: bool | None = None  # --fades-from-audio
+    silence_threshold: float | None = None  # --silence-threshold, dBFS
+    fades: dict[str, Seconds] | None = None  # cue name -> fade (--fade), wins over the audio
+
+
 class Show(BaseModel):
     audio_tracks: list[AudioTrack]
     effects: dict[EffectType, list[Effect]]
     # files whose cues join this show's songs (matched by song name); see parser.py
     include: list[str] | None = None
+    reaper: ReaperSettings | None = None
+    madmapper: MadMapperSettings | None = None

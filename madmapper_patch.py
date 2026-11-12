@@ -9,7 +9,7 @@ from show_orchestrator.madmapper import (
     DEFAULT_DEVICE, CueMatchError, fades_to_audio, list_cues, normalize_name,
     note_name, patch_cue_triggers, set_trigger_fade, trigger_fade,
 )
-from show_orchestrator.models import EffectType
+from show_orchestrator.models import EffectType, MadMapperSettings
 from show_orchestrator.notes import assign_missing_notes, lock_path_for
 from show_orchestrator.parser import Parser
 
@@ -72,20 +72,25 @@ def main():
 
     arg_parser.add_argument(
         "--fades-from-audio",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help=(
             "Fade each cue in over the silence that follows it in its song's audio,\n"
             "so the picture arrives with the music. Only cues whose effect fires once,\n"
-            "while the audio is silent, change; the others keep their fade."
+            "while the audio is silent, change; the others keep their fade.\n"
+            "Default: the show's madmapper: fades_from_audio:, else off."
         )
     )
 
     arg_parser.add_argument(
         "--silence-threshold",
         type=float,
-        default=DEFAULT_SILENCE_DB,
+        default=None,
         metavar="DB",
-        help=f"With --fades-from-audio, audio quieter than this counts as silence (default: {DEFAULT_SILENCE_DB:g} dBFS)"
+        help=(
+            "With --fades-from-audio, audio quieter than this counts as silence\n"
+            f"(default: the show's madmapper: silence_threshold:, else {DEFAULT_SILENCE_DB:g} dBFS)"
+        )
     )
 
     arg_parser.add_argument(
@@ -97,7 +102,8 @@ def main():
         metavar="CUE=SECONDS",
         help=(
             "Set a cue's fade, e.g. --fade \"0. Triumph=0.2\"; repeat for several.\n"
-            "Applied last, so it wins over --fades-from-audio."
+            "Adds to the show's madmapper: fades: (and wins for the same cue);\n"
+            "applied last, so these win over --fades-from-audio."
         )
     )
 
@@ -122,6 +128,14 @@ def main():
         arg_parser.error("the output must be a new project, not the one being read")
 
     show = Parser().load_show(args.file)
+    # Flags win over the show's madmapper: settings, which win over the defaults.
+    settings = show.madmapper or MadMapperSettings()
+    fades_from_audio = args.fades_from_audio if args.fades_from_audio is not None \
+        else bool(settings.fades_from_audio)
+    silence_threshold = next(v for v in (args.silence_threshold, settings.silence_threshold,
+                                         DEFAULT_SILENCE_DB) if v is not None)
+    hand_fades = dict(settings.fades or {})
+    hand_fades.update(args.fades)
     lock_path = None if args.no_note_lock else lock_path_for(args.file)
     effect_mapping = assign_missing_notes(show.effects, 0, lock_path)
     effect_types = args.effect_types or [str(EffectType.PROJECTION)]
@@ -150,10 +164,10 @@ def main():
 
     print(f"\n{len(report.patched)} cue triggers set.")
 
-    if args.fades_from_audio:
-        fades = fades_to_audio(project, show, report.patched, args.silence_threshold)
+    if fades_from_audio:
+        fades = fades_to_audio(project, show, report.patched, silence_threshold)
         changed = [f for f in fades if f.fade is not None]
-        print(f"\nFades from the audio (silence below {args.silence_threshold:g} dBFS):")
+        print(f"\nFades from the audio (silence below {silence_threshold:g} dBFS):")
         for result in changed:
             old = "unset" if result.old_fade is None else f"{result.old_fade:g} s"
             print(f"  {result.cue.name:<30} fade {old} -> {result.fade:g} s")
@@ -163,13 +177,13 @@ def main():
                 print(f"  {result.cue.name:<30} kept{old}: {result.reason}")
         print(f"{len(changed)} fades set.")
 
-    if args.fades:
-        print("\nFades set by hand:")
+    if hand_fades:
+        print("\nFades set by hand (--fade and the show's madmapper: fades:):")
         cues = list_cues(project)
-        for name, seconds in args.fades:
+        for name, seconds in hand_fades.items():
             matching = [cue for cue in cues if normalize_name(cue.name) == normalize_name(name)]
             if not matching:
-                arg_parser.error(f"--fade: no cue named {name!r}; nothing saved")
+                arg_parser.error(f"fade for {name!r}: the project has no cue of that name; nothing saved")
             for cue in matching:
                 old = trigger_fade(project, cue)
                 set_trigger_fade(project, cue, seconds)
