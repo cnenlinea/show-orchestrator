@@ -53,6 +53,7 @@ Each generated `.mid` carries standard MIDI meta events: a track name, and a mar
 | `-o`, `--output-dir` | Where to write MIDI, media and the project file (default `./build/`) |
 | `--orchestrate BACKEND` | Also build a project file; omit to generate MIDI only |
 | `--velocity N` | Velocity of generated `note_on` messages (default 127) |
+| `--gap SECONDS` | Silence between one song's end and the next song's start (default 0.5), so the operator can pause before the next song's cues fire; `0` butts songs together |
 | `--no-note-lock` | Ignore the note lock file — see below |
 
 Cues fire at velocity **127** by default. QLC+ scales note velocity into the input value, so a lower velocity arrives as a partial level rather than a clean trigger; change it with `--velocity` only if your receivers want that.
@@ -121,8 +122,8 @@ Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes th
 | `--device NAME` | MadMapper MIDI input to listen on (default `all`, any input) |
 | `--fades-from-audio` | Fade each cue in over the silence after it in its song's audio |
 | `--silence-threshold DB` | With `--fades-from-audio`, audio quieter than this counts as silence (default −40 dBFS) |
-| `--dry-run` | Print the report without saving |
 | `--fade CUE=SECONDS` | Set a cue's fade by hand, e.g. `--fade "0. Triumph=0.2"` to land on a hit; repeat for several. Wins over `--fades-from-audio` |
+| `--dry-run` | Print the report without saving |
 | `--no-note-lock` | Ignore the note lock file |
 
 MadMapper names notes from `C-2` = 0 (so note 60 is `C3`) and numbers channels from 1, so effect channel 0 shows up as `Midi 1`. The `.mad` reader/writer is [show_orchestrator/madfile.py](show_orchestrator/madfile.py); a project loaded and saved unchanged comes back byte-for-byte identical.
@@ -241,7 +242,7 @@ Deleting the lock re-assigns everything from scratch; `--no-note-lock` skips it 
 1. Open the generated `.rpp`. You get one track per effect type (`lights`, `projection`, `homeassistant`), an **Audio Files** track, one track per extra-track name, and a marker at the start of each song.
 2. Route each effect track's MIDI output to a virtual MIDI port (e.g. [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) on Windows): track I/O → MIDI Hardware Output.
 3. Point MadMapper (Cues → MIDI triggers) and QLC+ (Virtual Console / Input profiles) at those ports and map the notes — `madmapper_patch.py` can set the MadMapper cue triggers for you, and the note mapper GUI auditions them.
-4. Press play: audio for the cast, MIDI notes for the machines. Rehearse by scrubbing anywhere in the timeline.
+4. Press play: audio for the cast, MIDI notes for the machines. Rehearse by scrubbing anywhere in the timeline. Songs are `--gap` seconds apart (0.5 s by default; the web UI's *Gap between songs*), so stopping at the end of a song never fires the next song's opening cues.
 
 ## Project layout
 

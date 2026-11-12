@@ -172,3 +172,21 @@ def test_lists_media_files(client, root):
     (root / "shows" / "demo" / "song.MP3").write_bytes(b"")
 
     assert client.get("/api/media").get_json() == {"files": ["shows/demo/song.MP3"]}
+
+
+def test_build_puts_the_gap_between_songs(client, root):
+    (root / "shows" / "demo" / "demo.csv").write_text(
+        "One,audio,,0:10,,\nFade,lights,0:01,,,\nTwo,audio,,0:10,,\nFade,lights,0:01,,,\n"
+    )
+    response = client.post("/api/build", json={
+        "file": "shows/demo/demo.csv", "output_dir": "out", "orchestrate": "reaper", "gap": "2",
+    })
+    assert response.status_code == 200
+    assert 'MARKER 1 12.0 "Two"' in (root / "out" / "demo.rpp").read_text()
+
+
+@pytest.mark.parametrize("gap", ["-1", "soon"])
+def test_build_rejects_bad_gap(client, gap):
+    response = client.post("/api/build", json={"file": "shows/demo/demo.csv", "gap": gap})
+    assert response.status_code == 400
+    assert "gap" in response.get_json()["error"]

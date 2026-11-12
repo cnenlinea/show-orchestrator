@@ -5,7 +5,7 @@ from show_orchestrator.checks import check_show
 from show_orchestrator.parser import Parser
 from show_orchestrator.generator import DEFAULT_VELOCITY, MidiGenerator
 from show_orchestrator.notes import lock_path_for
-from show_orchestrator.backends.reaper import ReaperBackend
+from show_orchestrator.backends.reaper import DEFAULT_SONG_GAP, ReaperBackend
 
 AVAILABLE_BACKENDS = {
     "reaper": ReaperBackend,
@@ -49,6 +49,17 @@ def main():
     )
 
     arg_parser.add_argument(
+        "--gap",
+        type=float,
+        default=DEFAULT_SONG_GAP,
+        metavar="SECONDS",
+        help=(
+            "Silence between one song's end and the next song's start, so the operator\n"
+            f"can pause before the next song's cues fire (default: {DEFAULT_SONG_GAP:g})"
+        )
+    )
+
+    arg_parser.add_argument(
         "--no-note-lock",
         action="store_true",
         help=(
@@ -58,6 +69,8 @@ def main():
     )
 
     args = arg_parser.parse_args()
+    if args.gap < 0:
+        arg_parser.error("--gap can't be negative")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     file: Path = args.file
@@ -74,7 +87,7 @@ def main():
         return
 
     orchestrator = AVAILABLE_BACKENDS[args.orchestrate]()
-    orchestrator.create_project(show_data, midi_file_paths, args.output_dir)
+    orchestrator.create_project(show_data, midi_file_paths, args.output_dir, song_gap=args.gap)
     orchestrator.save_project(args.output_dir / f"{file.stem}.rpp")
 
 if __name__ == "__main__":

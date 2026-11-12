@@ -16,6 +16,10 @@ SOURCE_FORMAT_OVERRIDES = {
     ".mpg": "VIDEO",
 }
 
+# Seconds of nothing between one song's end and the next song's start, so the
+# operator can pause before the next song's cues fire.
+DEFAULT_SONG_GAP = 0.5
+
 
 class ReaperBackend:
 
@@ -51,12 +55,17 @@ class ReaperBackend:
         show: Show,
         midi_files: dict[str, dict[EffectType, GeneratedMidi]],
         output_dir: Path,
+        song_gap: float = DEFAULT_SONG_GAP,
     ) -> None:
         """Build the project; save it into `output_dir` with `save_project`.
 
         Media is copied into `output_dir` and referenced relative to it, so
         the folder can be moved or opened on another machine as a whole.
+        Songs follow one another with `song_gap` seconds of silence, and no
+        cues, between them.
         """
+        if song_gap < 0:
+            raise ValueError(f"The gap between songs can't be negative ({song_gap} s)")
         audio_files_included = any(track.file_path for track in show.audio_tracks)
 
         tracks = {}
@@ -119,7 +128,7 @@ class ReaperBackend:
 
             self.project.props.append(marker(track_index, current_position, track.name))
             track_index += 1
-            current_position += track.duration_seconds
+            current_position += track.duration_seconds + song_gap
 
     def save_project(self, project_file_path: Path) -> None:
         self.project.write(project_file_path)

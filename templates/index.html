@@ -152,6 +152,7 @@
           </select>
         </label>
         <label>Velocity <input id="velocity" type="number" min="1" max="127" value="{{ default_velocity }}"></label>
+        <label title="Silence between songs, so you can pause before the next song's cues fire">Gap between songs (s) <input id="gap" type="number" min="0" step="0.1" value="{{ default_gap }}"></label>
         <label>Use note lock <input id="note-lock" type="checkbox" checked></label>
         <button id="build" class="primary">Build</button>
       </div>
@@ -337,6 +338,7 @@ async function build() {
       output_dir: $("output-dir").value,
       orchestrate: $("orchestrate").value,
       velocity: $("velocity").value,
+      gap: $("gap").value,
       note_lock: $("note-lock").checked,
     });
     const lines = [`Wrote ${result.midi_files.length} MIDI files to ${result.output_dir}`];

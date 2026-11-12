@@ -117,7 +117,7 @@ def test_extra_tracks_with_the_same_name_share_a_reaper_track(tmp_path):
     assert content.count('NAME "Click"') == 1
     luces = content.split('NAME "Luces"')[1].split("<TRACK")[0]
     assert 'FILE "a.mid"' in luces and 'FILE "b.mid"' in luces
-    assert "POSITION 10" in luces
+    assert "POSITION 10.5\n" in luces  # the second song, after the default 0.5 s gap
 
 
 def test_missing_media_raises(tmp_path):
@@ -125,3 +125,50 @@ def test_missing_media_raises(tmp_path):
     backend = ReaperBackend()
     with pytest.raises(FileNotFoundError, match="missing.mp3"):
         backend.create_project(show, {}, tmp_path)
+
+
+def two_song_show(tmp_path):
+    for name in ("one.mp3", "two.mp3", "lights.mid"):
+        (tmp_path / name).write_bytes(b"")
+    return Show(
+        audio_tracks=[
+            AudioTrack(name=name, duration="0:10", file_path=str(tmp_path / file),
+                       events={EffectType.LIGHTS: []},
+                       extra_tracks=[ExtraAudioTrack(name="Luces", timestamp="0:01", duration="0:05",
+                                                     file_path=str(tmp_path / "lights.mid"))])
+            for name, file in (("One", "one.mp3"), ("Two", "two.mp3"))
+        ],
+        effects={EffectType.LIGHTS: []},
+    )
+
+
+def song_positions(rpp: str) -> tuple[list[str], list[str]]:
+    lines = [line.strip() for line in rpp.splitlines()]
+    markers = [line.split()[2] for line in lines if line.startswith("MARKER")]
+    positions = [line.split()[1] for line in lines if line.startswith("POSITION")]
+    return markers, positions
+
+
+@pytest.mark.parametrize("gap, second_song", [(None, "10.5"), (2, "12"), (0, "10")])
+def test_songs_are_separated_by_the_gap(tmp_path, gap, second_song):
+    output_dir = tmp_path / "build"
+    output_dir.mkdir()
+    midi_files = {
+        name: {EffectType.LIGHTS: {"file_path": output_dir / f"{name}_lights.mid", "duration": 3.0}}
+        for name in ("One", "Two")
+    }
+    backend = ReaperBackend()
+    kwargs = {} if gap is None else {"song_gap": gap}
+    backend.create_project(two_song_show(tmp_path), midi_files, output_dir, **kwargs)
+    backend.save_project(output_dir / "show.rpp")
+
+    markers, positions = song_positions((output_dir / "show.rpp").read_text())
+    assert [float(m) for m in markers] == [0, float(second_song)]
+    # audio, then the song's extra clip at 0:01 and its cues: all move with the song
+    second = float(second_song)
+    assert sorted(float(p) for p in positions) == sorted([0, second, 1, second + 1, 0, second])
+
+
+def test_a_negative_gap_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="negative"):
+        ReaperBackend().create_project(two_song_show(tmp_path), {}, tmp_path, song_gap=-1)

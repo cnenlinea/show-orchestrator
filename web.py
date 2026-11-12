@@ -7,6 +7,7 @@ import yaml
 from flask import Flask, jsonify, render_template, request
 
 from main import AVAILABLE_BACKENDS
+from show_orchestrator.backends.reaper import DEFAULT_SONG_GAP
 from show_orchestrator.editor import read_document, render_document
 from show_orchestrator.generator import DEFAULT_VELOCITY, MidiGenerator
 from show_orchestrator.models import EffectType, Show
@@ -137,6 +138,7 @@ def create_app(root: Path) -> Flask:
             effect_types=[str(effect_type) for effect_type in EffectType],
             backends=list(AVAILABLE_BACKENDS),
             default_velocity=DEFAULT_VELOCITY,
+            default_gap=DEFAULT_SONG_GAP,
             default_output_dir=DEFAULT_OUTPUT_DIR,
         )
 
@@ -237,6 +239,12 @@ def create_app(root: Path) -> Flask:
             return error("Velocity must be a number")
         if not 1 <= velocity <= 127:
             return error("Velocity must be between 1 and 127")
+        try:
+            gap = float(data.get("gap", DEFAULT_SONG_GAP))
+        except (TypeError, ValueError):
+            return error("The gap between songs must be a number of seconds")
+        if not gap >= 0:  # also refuses NaN
+            return error("The gap between songs can't be negative")
 
         output_dir = root / (data.get("output_dir") or DEFAULT_OUTPUT_DIR)
         lock_path = lock_path_for(file) if data.get("note_lock", True) else None
@@ -249,7 +257,7 @@ def create_app(root: Path) -> Flask:
             )
             if backend_name is not None:
                 backend = AVAILABLE_BACKENDS[backend_name]()
-                backend.create_project(show_data, midi_files, output_dir)
+                backend.create_project(show_data, midi_files, output_dir, song_gap=gap)
                 project_path = output_dir / f"{file.stem}.rpp"
                 backend.save_project(project_path)
         except SHOW_ERRORS as exc:
