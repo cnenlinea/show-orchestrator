@@ -100,8 +100,12 @@ class Effect(BaseModel):
     name: str
     note: int | None = None
     channel: int | None = None
+    # the file an effect came from when a show includes another file (e.g. a lights timeline)
+    included_from: str | None = None
 
 
 class Show(BaseModel):
     audio_tracks: list[AudioTrack]
     effects: dict[EffectType, list[Effect]]
+    # files whose cues join this show's songs (matched by song name); see parser.py
+    include: list[str] | None = None

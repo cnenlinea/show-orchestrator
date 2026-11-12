@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 
+from show_orchestrator.checks import check_show
 from show_orchestrator.parser import Parser
 from show_orchestrator.generator import DEFAULT_VELOCITY, MidiGenerator
 from show_orchestrator.notes import lock_path_for
@@ -62,6 +63,7 @@ def main():
     file: Path = args.file
     parser = Parser()
     show_data = parser.load_show(file)
+    check_show(show_data)
 
     lock_path = None if args.no_note_lock else lock_path_for(file)
     midi_generator = MidiGenerator(velocity=args.velocity)
