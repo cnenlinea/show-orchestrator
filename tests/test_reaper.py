@@ -172,3 +172,113 @@ def test_songs_are_separated_by_the_gap(tmp_path, gap, second_song):
 def test_a_negative_gap_is_refused(tmp_path):
     with pytest.raises(ValueError, match="negative"):
         ReaperBackend().create_project(two_song_show(tmp_path), {}, tmp_path, song_gap=-1)
+
+
+# reaper: split_midi: moving a MIDI track of an extra track's file onto a REAPER track of its own
+
+def write_lights_file(path, lyrics=True):
+    """A file like the musical's: a tempo track, lights on channel 2, ReWorship lyric cues on channel 10."""
+    import mido
+
+    midi = mido.MidiFile(type=1, ticks_per_beat=480)
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("track_name", name="QLC+"),
+        mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(100), time=0),
+    ]))
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("track_name", name="Lights"),
+        mido.Message("note_on", channel=1, note=0, velocity=100, time=960),
+        mido.Message("note_off", channel=1, note=0, time=120),
+    ]))
+    if lyrics:
+        midi.tracks.append(mido.MidiTrack([
+            mido.MetaMessage("track_name", name="Letras ReWorship"),
+            mido.Message("program_change", channel=9, program=4, time=0),
+            mido.Message("note_on", channel=9, note=0, velocity=100, time=480),
+            mido.Message("note_off", channel=9, note=0, time=120),
+            mido.Message("note_on", channel=9, note=1, velocity=100, time=1800),
+            mido.Message("note_off", channel=9, note=1, time=120),
+        ]))
+    midi.save(path)
+
+
+def timed_notes(path):
+    """(seconds, channel, note) of every note on in a .mid, and the names of its tracks."""
+    import mido
+
+    midi = mido.MidiFile(path)
+    seconds, notes = 0.0, []
+    for message in midi:
+        seconds += message.time
+        if message.type == "note_on":
+            notes.append((round(seconds, 6), message.channel, message.note))
+    names = [next((m.name for m in t if m.type == "track_name"), "") for t in midi.tracks]
+    return notes, names
+
+
+def test_split_midi_moves_a_named_track_to_a_file_of_its_own(tmp_path):
+    from show_orchestrator.backends.reaper import split_midi_file
+
+    source = tmp_path / "song.mid"
+    write_lights_file(source)
+    pieces = split_midi_file(source, {"Letras ReWorship": "Letras"})
+    assert [target for target, _ in pieces] == ["Letras", None]
+    for target, midi in pieces:
+        midi.save(tmp_path / f"{target}.mid")
+
+    original, _ = timed_notes(source)
+    lyrics, lyric_tracks = timed_notes(tmp_path / "Letras.mid")
+    rest, rest_tracks = timed_notes(tmp_path / "None.mid")
+    assert lyrics == [n for n in original if n[1] == 9] and len(lyrics) == 2
+    assert rest == [n for n in original if n[1] != 9] and len(rest) == 1
+    assert lyrics[0][0] == pytest.approx(0.6)  # 480 ticks, one beat at 100 BPM (0.5 s at 120): the tempo map came along
+    assert lyric_tracks == ["", "Letras ReWorship"] and rest_tracks == ["QLC+", "Lights"]
+    import mido
+    assert any(m.type == "program_change" for m in mido.MidiFile(tmp_path / "Letras.mid"))
+
+
+def test_split_midi_leaves_files_it_names_nothing_in(tmp_path):
+    from show_orchestrator.backends.reaper import split_midi_file
+
+    source = tmp_path / "song.mid"
+    write_lights_file(source, lyrics=False)
+    assert split_midi_file(source, {"Letras ReWorship": "Letras"}) is None
+    assert split_midi_file(source, None) is None
+    (tmp_path / "song.mp3").write_bytes(b"audio")
+    assert split_midi_file(tmp_path / "song.mp3", {"Letras ReWorship": "Letras"}) is None
+
+
+def test_split_midi_puts_lyrics_on_their_own_routable_track(tmp_path):
+    from show_orchestrator.backends.reaper import project_track_names, read_midi_routing
+    from show_orchestrator.models import ReaperSettings
+
+    write_lights_file(tmp_path / "one.mid")
+    write_lights_file(tmp_path / "two.mid", lyrics=False)
+
+    def song(name, file):
+        return AudioTrack(
+            name=name, duration="0:10", events={EffectType.LIGHTS: []},
+            extra_tracks=[ExtraAudioTrack(name="Luces", timestamp="0:00", duration="0:10",
+                                          file_path=str(tmp_path / file))],
+        )
+
+    show = Show(
+        audio_tracks=[song("One", "one.mid"), song("Two", "two.mid")],
+        effects={EffectType.LIGHTS: []},
+        reaper=ReaperSettings(split_midi={"Letras ReWorship": "Letras"}),
+    )
+    assert project_track_names(show) == ["lights", "Luces", "Letras"]
+    output_dir = tmp_path / "build"
+    output_dir.mkdir()
+    backend = ReaperBackend()
+    backend.create_project(show, {}, output_dir, routing={"Luces": 64, "Letras": 65})
+    backend.save_project(output_dir / "show.rpp")
+
+    content = (output_dir / "show.rpp").read_text()
+    assert read_midi_routing(content) == [("lights", -1), ("Luces", 64), ("Letras", 65)]
+    luces = content.split('NAME "Luces"')[1].split("<TRACK")[0]
+    letras = content.split('NAME "Letras"')[1]
+    assert 'FILE "one_Luces.mid"' in luces and 'FILE "two.mid"' in luces
+    assert 'FILE "one_Letras.mid"' in letras and "two" not in letras
+    assert sorted(p.name for p in output_dir.glob("*.mid")) == ["one_Letras.mid", "one_Luces.mid", "two.mid"]
+

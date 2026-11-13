@@ -225,6 +225,9 @@ reaper:                     # main.py / the web UI's Build
     mac:
       projection: 64        # REAPER track name -> MIDI hardware output
       Luces: 64
+      Letras: 65
+  split_midi:               # MIDI track in extra-track .mid files -> its own REAPER track
+    Letras ReWorship: Letras
 madmapper:                  # madmapper_patch.py
   fades_from_audio: true    # --fades-from-audio
   silence_threshold: -40    # --silence-threshold
@@ -241,6 +244,8 @@ python reaper_routing.py musical_2026_mac.rpp --profile mac --show shows/musical
 ```
 
 It prints a `reaper: routing:` block to paste into the show (and, with `--show`, warns about routed tracks the show's builds don't have). Then build with `--routing mac`, or set `default_routing: mac` so every build of the show is routed for that machine (`--no-routing` builds without; in the web UI, *MIDI routing* starts on the show's default, and a profile you pick is remembered per browser): every routed track gets its output, and naming a track the project doesn't have is an error. Tracks are named `Audio Files`, the effect types (`lights`, `projection`, `homeassistant`) and the extra tracks' names.
+
+**Splitting MIDI files.** An extra track's `.mid` lands whole on one REAPER track, so everything in it goes to that track's MIDI output. When one file carries cues for two programs, e.g. a lights file whose `Letras ReWorship` track advances ReWorship's lyric slides, `split_midi` moves each named MIDI track (matched by its track name) onto a REAPER track of its own, which then routes to its own output. The build writes the pieces next to the project as `<file>_<REAPER track>.mid` (the rest of the file keeps the extra track's name, e.g. `MS 2 Medley de Navidad_Luces.mid`), each keeping the original's tempo map; files without a named track are copied as they are. The new tracks can be routed like any other.
 
 The web editor keeps these sections (and `include:`) when it saves a YAML show.
 

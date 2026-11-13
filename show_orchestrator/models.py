@@ -134,6 +134,9 @@ class ReaperSettings(BaseModel):
     routing: dict[str, dict[str, MidiOut]] | None = None
     # the routing profile builds use unless --routing / --no-routing says otherwise
     default_routing: str | None = None
+    # MIDI track name inside extra-track .mid files -> REAPER track it moves to, so it
+    # can go to its own MIDI output (e.g. ReWorship lyric cues off the lights file)
+    split_midi: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def _default_routing_is_a_profile(self) -> "ReaperSettings":

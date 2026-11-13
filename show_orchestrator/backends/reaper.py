@@ -1,6 +1,8 @@
+import re
 import shutil
 from pathlib import Path
 
+import mido
 from reathon.nodes import Project, Track, Item, Source
 from reathon.helper import marker
 
@@ -22,6 +24,76 @@ DEFAULT_SONG_GAP = 0.5
 
 # reaper_settings' routing_profile for an unrouted build, even when the show has a default_routing
 NO_ROUTING = ""
+
+# Extra-track files that reaper: split_midi: can cut apart
+MIDI_SUFFIXES = {".mid", ".midi"}
+
+# Meta events that set the clock: every file split out of a .mid keeps them, so its cues stay put
+TIMING_META = {"set_tempo", "time_signature", "key_signature", "smpte_offset"}
+
+
+def _midi_track_name(track: mido.MidiTrack) -> str:
+    for message in track:
+        if message.type == "track_name":
+            return message.name.strip()
+    return ""
+
+
+def _timing_track(tracks: list[mido.MidiTrack]) -> mido.MidiTrack | None:
+    """The tempo map of `tracks` as one track, or None when they have none."""
+    timing = mido.MidiTrack()
+    pending = 0
+    for message in mido.merge_tracks(tracks):
+        pending += message.time
+        if message.is_meta and message.type in TIMING_META:
+            timing.append(message.copy(time=pending))
+            pending = 0
+    if not timing:
+        return None
+    timing.append(mido.MetaMessage("end_of_track", time=0))
+    return timing
+
+
+def split_midi_file(
+    file_path: str | Path, split: dict[str, str] | None,
+) -> list[tuple[str | None, mido.MidiFile]] | None:
+    """`file_path` cut apart as a show's `reaper: split_midi:` asks.
+
+    Each MIDI track `split` names (by its track name) moves to a file of its
+    own, for the REAPER track `split` gives it; tracks moving to the same
+    REAPER track share a file. The rest stays together. Returns
+    (REAPER track name, file) for each, None for the rest (left out when
+    nothing is left), or None when `split` names none of the file's tracks.
+    Every file keeps the original's tempo map, so its cues land where they did.
+    """
+    if not split or Path(file_path).suffix.lower() not in MIDI_SUFFIXES:
+        return None
+    midi = mido.MidiFile(file_path)
+    targets = [split.get(_midi_track_name(track)) for track in midi.tracks]
+    if not any(targets):
+        return None
+
+    def new_file(indices: list[int], timing_from: list[int]) -> mido.MidiFile:
+        out = mido.MidiFile(type=1, ticks_per_beat=midi.ticks_per_beat)
+        timing = _timing_track([midi.tracks[i] for i in timing_from])
+        if timing:
+            out.tracks.append(timing)
+        out.tracks.extend(midi.tracks[i] for i in indices)
+        return out
+
+    every = range(len(midi.tracks))
+    pieces: list[tuple[str | None, mido.MidiFile]] = []
+    for target in dict.fromkeys(t for t in targets if t):
+        moved = [i for i in every if targets[i] == target]
+        pieces.append((target, new_file(moved, [i for i in every if i not in moved])))
+    kept = [i for i in every if not targets[i]]
+    if kept:
+        pieces.append((None, new_file(kept, [i for i in every if targets[i]])))
+    return pieces
+
+
+def _file_name_part(name: str) -> str:
+    return re.sub(r'[<>:"/\\|?*]', "_", name)
 
 
 class ReaperBackend:
@@ -72,6 +144,7 @@ class ReaperBackend:
         if song_gap < 0:
             raise ValueError(f"The gap between songs can't be negative ({song_gap} s)")
         audio_files_included = any(track.file_path for track in show.audio_tracks)
+        split = show.reaper.split_midi if show.reaper else None
         if routing:
             names = project_track_names(show)
             unknown = [name for name in routing if name not in names]
@@ -99,6 +172,11 @@ class ReaperBackend:
         # Extra clips with the same name share one REAPER track, e.g. a lights MIDI file per song.
         extra_tracks_by_name: dict[str, Track] = {}
 
+        def extra_reaper_track(name: str) -> Track:
+            if name not in extra_tracks_by_name:
+                extra_tracks_by_name[name] = add_track(name)
+            return extra_tracks_by_name[name]
+
         current_position = 0
         track_index = 0
         for track in show.audio_tracks:
@@ -114,17 +192,16 @@ class ReaperBackend:
 
             if track.extra_tracks:
                 for extra_track in track.extra_tracks:
-                    new_track = extra_tracks_by_name.get(extra_track.name)
-                    if new_track is None:
-                        new_track = extra_tracks_by_name[extra_track.name] = add_track(extra_track.name)
-                    media = self._copy_media(Path(extra_track.file_path), output_dir)
-                    source = self._create_source(media)
-                    item = Item(
-                        source,
-                        position=current_position+extra_track.timestamp_seconds,
-                        length=extra_track.duration_seconds
-                    )
-                    new_track.add(item)
+                    extra_reaper_track(extra_track.name)
+                    for name, media in self._extra_track_media(extra_track.name, Path(extra_track.file_path),
+                                                               output_dir, split):
+                        source = self._create_source(media)
+                        item = Item(
+                            source,
+                            position=current_position+extra_track.timestamp_seconds,
+                            length=extra_track.duration_seconds
+                        )
+                        extra_reaper_track(name).add(item)
 
             midi_file_paths = midi_files.get(track.name, {})
             for effect_type, generated_midi in midi_file_paths.items():
@@ -147,6 +224,28 @@ class ReaperBackend:
         for name, reaper_track in named_tracks:
             if routing and name in routing:
                 reaper_track.props.append(["MIDIOUT", routing[name]])
+
+    def _extra_track_media(
+        self, name: str, file_path: Path, output_dir: Path, split: dict[str, str] | None,
+    ) -> list[tuple[str, Path]]:
+        """(REAPER track, media relative to the project) for an extra track's file.
+
+        The file is copied next to the project as it is, or, when `split`
+        names MIDI tracks in it, written there in pieces named
+        `<file>_<REAPER track>.mid`.
+        """
+        if not file_path.exists():
+            raise FileNotFoundError(f"Media file not found: {file_path}")
+        pieces = split_midi_file(file_path, split)
+        if pieces is None:
+            return [(name, self._copy_media(file_path, output_dir))]
+        media = []
+        for target, midi in pieces:
+            target = target or name
+            piece = Path(f"{file_path.stem}_{_file_name_part(target)}.mid")
+            midi.save(output_dir / piece)
+            media.append((target, piece))
+        return media
 
     def save_project(self, project_file_path: Path) -> None:
         self.project.write(project_file_path)
@@ -180,10 +279,13 @@ def project_track_names(show: Show) -> list[str]:
     """The names of the tracks `ReaperBackend.create_project` makes for `show`, in order."""
     names = ["Audio Files"] if any(track.file_path for track in show.audio_tracks) else []
     names += [str(effect_type) for effect_type in show.effects]
+    split = show.reaper.split_midi if show.reaper else None
     for track in show.audio_tracks:
         for extra in track.extra_tracks or []:
-            if extra.name not in names:
-                names.append(extra.name)
+            pieces = split_midi_file(extra.file_path, split) if Path(extra.file_path).exists() else None
+            for name in [extra.name] + [target or extra.name for target, _ in pieces or []]:
+                if name not in names:
+                    names.append(name)
     return names
 
 
