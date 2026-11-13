@@ -1,3 +1,4 @@
+import filecmp
 import re
 import shutil
 from pathlib import Path
@@ -109,11 +110,16 @@ class ReaperBackend:
         return source
 
     def _copy_media(self, file_path: Path, output_dir: Path) -> Path:
-        """Copy media next to the project; returns its path relative to the project."""
+        """Copy media next to the project; returns its path relative to the project.
+
+        A copy from an earlier build is replaced when the source has changed
+        since, and left alone (not copied again) when it hasn't.
+        """
         if not file_path.exists():
             raise FileNotFoundError(f"Media file not found: {file_path}")
         output_path = output_dir / file_path.name
-        if not output_path.exists():
+        # shallow: same size and mtime (copy2 keeps the mtime) counts as the same, else bytes are compared
+        if not (output_path.exists() and filecmp.cmp(file_path, output_path, shallow=True)):
             shutil.copy2(file_path, output_path)
         return Path(file_path.name)
 

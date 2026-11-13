@@ -282,3 +282,36 @@ def test_split_midi_puts_lyrics_on_their_own_routable_track(tmp_path):
     assert 'FILE "one_Letras.mid"' in letras and "two" not in letras
     assert sorted(p.name for p in output_dir.glob("*.mid")) == ["one_Letras.mid", "one_Luces.mid", "two.mid"]
 
+
+def test_rebuilding_picks_up_media_that_changed_since(tmp_path):
+    import os
+
+    media_dir = tmp_path / "Pistas"
+    media_dir.mkdir()
+    song = media_dir / "song.mp3"
+    song.write_bytes(b"first mix")
+    output_dir = tmp_path / "build"
+    output_dir.mkdir()
+
+    def build():
+        ReaperBackend().create_project(make_show(str(song)), {}, output_dir)
+        return output_dir / "song.mp3"
+
+    copy = build()
+    assert copy.read_bytes() == b"first mix"
+
+    song.write_bytes(b"second mix, longer")
+    assert build().read_bytes() == b"second mix, longer"
+
+    song.write_bytes(b"third  mix, longer")  # same size as the copy: the bytes still tell
+    os.utime(song, (copy.stat().st_atime, copy.stat().st_mtime + 5))
+    assert build().read_bytes() == b"third  mix, longer"
+
+    # Unchanged media is not copied again (copying over the read-only copy would fail).
+    before = copy.stat().st_mtime_ns
+    copy.chmod(0o444)
+    try:
+        build()
+    finally:
+        copy.chmod(0o644)
+    assert copy.stat().st_mtime_ns == before
