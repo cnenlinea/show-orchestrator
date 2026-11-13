@@ -6,8 +6,9 @@ import yaml
 from pydantic import ValidationError
 
 import madmapper_patch
+import main
 from show_orchestrator.backends.reaper import (
-    DEFAULT_SONG_GAP, ReaperBackend, project_track_names, read_midi_routing, reaper_settings,
+    DEFAULT_SONG_GAP, NO_ROUTING, ReaperBackend, project_track_names, read_midi_routing, reaper_settings,
 )
 from show_orchestrator.editor import read_document, render_document
 from show_orchestrator.madfile import MadProject
@@ -108,6 +109,34 @@ def test_routing_profile_is_picked_by_name(show_file):
         reaper_settings(show, routing_profile="pc")
 
 
+def test_default_routing_applies_unless_a_flag_says_otherwise(show_file):
+    show = Parser().load_show(show_file)
+    show.reaper.routing["pc"] = {"projection": 1}
+    show.reaper.default_routing = "mac"
+    assert reaper_settings(show) == (2, {"projection": 64, "Luces": 96})
+    assert reaper_settings(show, routing_profile="pc") == (2, {"projection": 1})
+    assert reaper_settings(show, routing_profile=NO_ROUTING) == (2, None)
+
+
+def test_default_routing_must_be_a_profile(tmp_path):
+    path = tmp_path / "show.yaml"
+    path.write_text(SHOW_YAML.replace("  routing:\n", "  default_routing: pc\n  routing:\n"), encoding="utf-8")
+    with pytest.raises(ValidationError, match="default_routing 'pc' is not one of the routing profiles \\('mac'\\)"):
+        Parser().load_show(path)
+
+
+def test_main_builds_with_the_default_routing_or_without_any(show_file, tmp_path, monkeypatch):
+    show_file.write_text(SHOW_YAML.replace("  routing:\n", "  default_routing: mac\n  routing:\n"),
+                         encoding="utf-8")
+    for flags, expected in [([], 64), (["--no-routing"], -1), (["--routing", "mac"], 64)]:
+        out = tmp_path / f"out{len(flags)}"
+        monkeypatch.setattr(sys, "argv", ["main.py", str(show_file), "-o", str(out),
+                                          "--orchestrate", "reaper", "--no-note-lock", *flags])
+        main.main()
+        rpp = (out / "show.rpp").read_text()
+        assert dict(read_midi_routing(rpp))["projection"] == expected, flags
+
+
 def test_routed_tracks_get_their_midi_output(show_file, tmp_path):
     show = Parser().load_show(show_file)
     rpp = build(show, tmp_path, routing={"projection": 64, "Luces": 96})
@@ -175,6 +204,21 @@ def test_web_build_uses_the_show_gap_and_a_routing_profile(show_file, tmp_path):
     response = client.post("/api/build", json={"file": "shows/show.yaml", "routing": "pc"})
     assert response.status_code == 400
     assert "no routing profile" in response.get_json()["error"]
+
+
+def test_web_build_takes_the_show_default_routing_unless_none_is_picked(show_file, tmp_path):
+    (tmp_path / "shows").mkdir()
+    (tmp_path / "shows" / "show.yaml").write_text(
+        SHOW_YAML.replace("  routing:\n", "  default_routing: mac\n  routing:\n"), encoding="utf-8")
+    client = create_app(tmp_path).test_client()
+    assert client.get("/api/show?file=shows/show.yaml").get_json()["default_routing"] == "mac"
+
+    for request, expected in [({}, 64), ({"routing": ""}, -1)]:
+        response = client.post("/api/build", json={
+            "file": "shows/show.yaml", "output_dir": "out", "orchestrate": "reaper", **request})
+        assert response.status_code == 200, response.get_json()
+        rpp = (tmp_path / "out" / "show.rpp").read_text()
+        assert dict(read_midi_routing(rpp))["projection"] == expected, request
 
 
 def test_madmapper_patch_takes_fades_from_the_show(show_file, tmp_path, monkeypatch, capsys):

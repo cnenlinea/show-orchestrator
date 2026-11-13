@@ -5,7 +5,9 @@ from show_orchestrator.checks import check_show
 from show_orchestrator.parser import Parser
 from show_orchestrator.generator import DEFAULT_VELOCITY, MidiGenerator
 from show_orchestrator.notes import lock_path_for
-from show_orchestrator.backends.reaper import DEFAULT_SONG_GAP, ReaperBackend, reaper_settings
+from show_orchestrator.backends.reaper import (
+    DEFAULT_SONG_GAP, NO_ROUTING, ReaperBackend, reaper_settings,
+)
 
 AVAILABLE_BACKENDS = {
     "reaper": ReaperBackend,
@@ -60,13 +62,22 @@ def main():
         )
     )
 
-    arg_parser.add_argument(
+    routing = arg_parser.add_mutually_exclusive_group()
+    routing.add_argument(
         "--routing",
         metavar="PROFILE",
         help=(
             "Route tracks to MIDI outputs with this profile of the show's reaper: routing:\n"
-            "section, one per machine (see reaper_routing.py). Default: no routing."
+            "section, one per machine (see reaper_routing.py).\n"
+            "Default: the show's reaper: default_routing:, else no routing."
         )
+    )
+    routing.add_argument(
+        "--no-routing",
+        dest="routing",
+        action="store_const",
+        const=NO_ROUTING,
+        help="Build without MIDI output routing, even if the show has a default_routing."
     )
 
     arg_parser.add_argument(

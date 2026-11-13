@@ -2,7 +2,7 @@ import re
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, ConfigDict
+from pydantic import AfterValidator, BaseModel, ConfigDict, model_validator
 
 MMSS_PATTERN = re.compile(r"^\d{1,2}:\d{2}(\.\d+)?$")
 
@@ -132,6 +132,17 @@ class ReaperSettings(BaseModel):
     # per machine (profile name, picked with --routing): REAPER track name -> MIDI
     # hardware output, as reaper_routing.py reads it from a project saved on that machine
     routing: dict[str, dict[str, MidiOut]] | None = None
+    # the routing profile builds use unless --routing / --no-routing says otherwise
+    default_routing: str | None = None
+
+    @model_validator(mode="after")
+    def _default_routing_is_a_profile(self) -> "ReaperSettings":
+        if self.default_routing is not None and self.default_routing not in (self.routing or {}):
+            known = ", ".join(map(repr, self.routing or {})) or "none"
+            raise ValueError(
+                f"default_routing {self.default_routing!r} is not one of the routing profiles ({known})"
+            )
+        return self
 
 
 class MadMapperSettings(BaseModel):

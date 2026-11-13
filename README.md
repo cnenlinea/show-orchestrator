@@ -54,7 +54,8 @@ Each generated `.mid` carries standard MIDI meta events: a track name, and a mar
 | `--orchestrate BACKEND` | Also build a project file; omit to generate MIDI only |
 | `--velocity N` | Velocity of generated `note_on` messages (default 127) |
 | `--gap SECONDS` | Silence between one song's end and the next song's start (default: the show's `reaper: gap:`, else 0.5), so the operator can pause before the next song's cues fire; `0` butts songs together |
-| `--routing PROFILE` | Route tracks to MIDI outputs with one of the show's `reaper: routing:` profiles (see [Show settings](#show-settings-yaml-only)) |
+| `--routing PROFILE` | Route tracks to MIDI outputs with one of the show's `reaper: routing:` profiles (see [Show settings](#show-settings-yaml-only)); default: the show's `default_routing` |
+| `--no-routing` | Build without MIDI output routing, even if the show has a `default_routing` |
 | `--no-note-lock` | Ignore the note lock file — see below |
 
 Cues fire at velocity **127** by default. QLC+ scales note velocity into the input value, so a lower velocity arrives as a partial level rather than a clean trigger; change it with `--velocity` only if your receivers want that.
@@ -219,6 +220,7 @@ A YAML show can also carry the settings it is built and patched with, so nobody 
 ```yaml
 reaper:                     # main.py / the web UI's Build
   gap: 0.5                  # seconds between songs (--gap)
+  default_routing: mac      # profile used unless --routing / --no-routing
   routing:                  # per machine, picked with --routing PROFILE
     mac:
       projection: 64        # REAPER track name -> MIDI hardware output
@@ -238,7 +240,7 @@ A flag (or a filled-in web UI field) wins over the file, and the file over the b
 python reaper_routing.py musical_2026_mac.rpp --profile mac --show shows/musical_2026/musical_2026.yaml
 ```
 
-It prints a `reaper: routing:` block to paste into the show (and, with `--show`, warns about routed tracks the show's builds don't have). Then build with `--routing mac` (or pick *MIDI routing* in the web UI, which remembers the choice per browser): every routed track gets its output, and naming a track the project doesn't have is an error. Tracks are named `Audio Files`, the effect types (`lights`, `projection`, `homeassistant`) and the extra tracks' names.
+It prints a `reaper: routing:` block to paste into the show (and, with `--show`, warns about routed tracks the show's builds don't have). Then build with `--routing mac`, or set `default_routing: mac` so every build of the show is routed for that machine (`--no-routing` builds without; in the web UI, *MIDI routing* starts on the show's default, and a profile you pick is remembered per browser): every routed track gets its output, and naming a track the project doesn't have is an error. Tracks are named `Audio Files`, the effect types (`lights`, `projection`, `homeassistant`) and the extra tracks' names.
 
 The web editor keeps these sections (and `include:`) when it saves a YAML show.
 

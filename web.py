@@ -93,6 +93,7 @@ def describe_show(show: Show, lock_path: Path | None) -> dict:
         # the show's own build settings (YAML reaper: section), for the build panel
         "gap": reaper.gap if reaper else None,
         "routing_profiles": list((reaper.routing if reaper else None) or {}),
+        "default_routing": reaper.default_routing if reaper else None,
         "songs": songs,
         "effects": [
             {
@@ -260,7 +261,8 @@ def create_app(root: Path) -> Flask:
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             show_data = Parser().load_show(file)
-            gap, routing = reaper_settings(show_data, gap, data.get("routing") or None)
+            # no "routing" key: the show's default_routing; "" (NO_ROUTING): none
+            gap, routing = reaper_settings(show_data, gap, data.get("routing"))
             midi_files = MidiGenerator(velocity=velocity).generate_midi_files(
                 show_data, output_dir, lock_path
             )

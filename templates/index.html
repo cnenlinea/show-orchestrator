@@ -309,10 +309,12 @@ function renderShow(show) {
 // The build panel offers the show's own settings: its gap as the placeholder, its routing profiles.
 function showBuildSettings(show) {
   $("gap").placeholder = show.gap ?? {{ default_gap }};
+  // A profile picked in this browser wins; otherwise the show's default_routing is selected.
   const remembered = localStorage.getItem("routing");
+  const label = (name) => name === show.default_routing ? `${name} (show default)` : name;
   $("routing").replaceChildren(h("option", {value: "", textContent: "none"}),
-    ...show.routing_profiles.map((name) => h("option", {value: name, textContent: name})));
-  if (show.routing_profiles.includes(remembered)) $("routing").value = remembered;
+    ...show.routing_profiles.map((name) => h("option", {value: name, textContent: label(name)})));
+  $("routing").value = show.routing_profiles.includes(remembered) ? remembered : (show.default_routing ?? "");
 }
 
 async function loadShow() {

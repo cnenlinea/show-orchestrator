@@ -20,6 +20,9 @@ SOURCE_FORMAT_OVERRIDES = {
 # operator can pause before the next song's cues fire.
 DEFAULT_SONG_GAP = 0.5
 
+# reaper_settings' routing_profile for an unrouted build, even when the show has a default_routing
+NO_ROUTING = ""
+
 
 class ReaperBackend:
 
@@ -156,11 +159,14 @@ def reaper_settings(
 
     A `gap` given here wins over the show's `reaper: gap:`, which wins over
     DEFAULT_SONG_GAP. `routing_profile` picks one of the show's
-    `reaper: routing:` profiles (one per machine); None routes nothing.
+    `reaper: routing:` profiles (one per machine); None takes the show's
+    `reaper: default_routing:`, if any, and NO_ROUTING routes nothing.
     """
     settings = show.reaper
     if gap is None:
         gap = settings.gap if settings and settings.gap is not None else DEFAULT_SONG_GAP
+    if routing_profile is None and settings:
+        routing_profile = settings.default_routing
     if not routing_profile:
         return gap, None
     profiles = (settings.routing if settings else None) or {}
