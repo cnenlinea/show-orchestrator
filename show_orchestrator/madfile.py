@@ -273,12 +273,13 @@ def output_path_for(project_path: Path, suffix: str) -> Path:
     return project_path.with_name(f"{project_path.stem}{suffix}{project_path.suffix}")
 
 
-def save_project(project: MadProject, source: Path, output: Path) -> Path:
+def save_project(project: MadProject, source: Path, output: Path, project_path: str | None = None) -> Path:
     """Save `project`, loaded from `source`, as `output`; returns the .mad written.
 
     A MadMapper 6 `.madproject` folder is copied whole (shaders, materials...,
     but not its backups) and its .mad renamed to match the new folder, as
-    MadMapper names it.
+    MadMapper names it. Its `projectPath` becomes `project_path`, by default
+    where `output` is.
     """
     if not source.is_dir():
         project.save(output)
@@ -289,6 +290,6 @@ def save_project(project: MadProject, source: Path, output: Path) -> Path:
     old_mad = output / mad_file_in(source).name
     new_mad = output / f"{output.stem}.mad"
     old_mad.unlink()
-    set_value(project.root, "projectPath", (T_STRING, output.resolve().as_posix(), 0))
+    set_value(project.root, "projectPath", (T_STRING, project_path or output.resolve().as_posix(), 0))
     project.save(new_mad)
     return new_mad

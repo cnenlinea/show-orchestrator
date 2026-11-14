@@ -1,7 +1,7 @@
 import filecmp
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 
 import mido
 from reathon.nodes import Project, Track, Item, Source
@@ -101,6 +101,7 @@ class ReaperBackend:
 
     def __init__(self) -> None:
         self.project = Project()
+        self.media_in_place = False
 
     def _create_source(self, file_path: str | Path) -> Source:
         source = Source(file=str(file_path))
@@ -109,14 +110,18 @@ class ReaperBackend:
             source.name = f"SOURCE {override}"
         return source
 
-    def _copy_media(self, file_path: Path, output_dir: Path) -> Path:
+    def _copy_media(self, file_path: Path, output_dir: Path) -> PurePath:
         """Copy media next to the project; returns its path relative to the project.
 
         A copy from an earlier build is replaced when the source has changed
-        since, and left alone (not copied again) when it hasn't.
+        since, and left alone (not copied again) when it hasn't. With
+        `media_in_place` nothing is copied: the media is referenced at its
+        path as the show gives it (see `create_project`).
         """
         if not file_path.exists():
             raise FileNotFoundError(f"Media file not found: {file_path}")
+        if self.media_in_place:
+            return PurePosixPath(file_path.as_posix())  # forward slashes: the project also opens on a Mac
         output_path = output_dir / file_path.name
         # shallow: same size and mtime (copy2 keeps the mtime) counts as the same, else bytes are compared
         if not (output_path.exists() and filecmp.cmp(file_path, output_path, shallow=True)):
@@ -138,6 +143,7 @@ class ReaperBackend:
         output_dir: Path,
         song_gap: float = DEFAULT_SONG_GAP,
         routing: dict[str, int] | None = None,
+        media_in_place: bool = False,
     ) -> None:
         """Build the project; save it into `output_dir` with `save_project`.
 
@@ -146,11 +152,25 @@ class ReaperBackend:
         Songs follow one another with `song_gap` seconds of silence, and no
         cues, between them. `routing` gives tracks, by name, their MIDI
         hardware output (REAPER's MIDIOUT value; see `read_midi_routing`).
+
+        With `media_in_place`, media is not copied but referenced at the path
+        the show gives it, which REAPER reads relative to the project folder:
+        for a folder that holds the show's files at those paths next to the
+        project (a bundle, see `show_orchestrator.bundle`).
         """
+        self.media_in_place = media_in_place
         if song_gap < 0:
             raise ValueError(f"The gap between songs can't be negative ({song_gap} s)")
         audio_files_included = any(track.file_path for track in show.audio_tracks)
         split = show.reaper.split_midi if show.reaper else None
+        no_markers = set((show.reaper.no_markers if show.reaper else None) or [])
+        songs = [track.name for track in show.audio_tracks]
+        unknown_songs = sorted(no_markers.difference(songs))
+        if unknown_songs:  # a typo would otherwise leave the marker in without a word
+            raise ValueError(
+                f"reaper: no_markers names songs the show doesn't have: {', '.join(map(repr, unknown_songs))}; "
+                f"its songs are {', '.join(map(repr, songs))}"
+            )
         if routing:
             names = project_track_names(show)
             unknown = [name for name in routing if name not in names]
@@ -184,7 +204,7 @@ class ReaperBackend:
             return extra_tracks_by_name[name]
 
         current_position = 0
-        track_index = 0
+        marker_index = 0
         for track in show.audio_tracks:
             if track.file_path:
                 media = self._copy_media(Path(track.file_path), output_dir)
@@ -223,8 +243,9 @@ class ReaperBackend:
                 if effect_track:
                     effect_track.add(item)
 
-            self.project.props.append(marker(track_index, current_position, track.name))
-            track_index += 1
+            if track.name not in no_markers:
+                self.project.props.append(marker(marker_index, current_position, track.name))
+                marker_index += 1  # numbered without gaps, so marker N stays the Nth song that has one
             current_position += track.duration_seconds + song_gap
 
         for name, reaper_track in named_tracks:
@@ -233,7 +254,7 @@ class ReaperBackend:
 
     def _extra_track_media(
         self, name: str, file_path: Path, output_dir: Path, split: dict[str, str] | None,
-    ) -> list[tuple[str, Path]]:
+    ) -> list[tuple[str, PurePath]]:
         """(REAPER track, media relative to the project) for an extra track's file.
 
         The file is copied next to the project as it is, or, when `split`

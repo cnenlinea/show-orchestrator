@@ -1,13 +1,22 @@
 import argparse
+import hashlib
+import hmac
+import math
+import os
+import re
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 
 import mido
 import yaml
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 from main import AVAILABLE_BACKENDS
 from show_orchestrator.backends.reaper import DEFAULT_SONG_GAP, reaper_settings
+from show_orchestrator.bundle import write_bundle
+from show_orchestrator.madmapper import DEFAULT_DEVICE, note_name
+from show_orchestrator.madupload import parse_fades, patch_upload
 from show_orchestrator.editor import read_document, render_document
 from show_orchestrator.generator import DEFAULT_VELOCITY, MidiGenerator
 from show_orchestrator.models import EffectType, Show
@@ -17,10 +26,41 @@ from show_orchestrator.parser import Parser
 SHOW_SUFFIXES = {".yaml", ".yml", ".csv"}
 MEDIA_SUFFIXES = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aif", ".aiff", ".mid", ".midi"}
 DEFAULT_OUTPUT_DIR = "build"
+BUNDLE_DIR = "build/bundles"  # the latest bundle of each show, for downloading
+MADMAPPER_DIR = "build/madmapper"  # the latest patched copy of each MadMapper project, for downloading
+MAX_UPLOAD_BYTES = 2 * 1024**3
 
 # What a broken show definition or a missing media file can raise.
 SHOW_ERRORS = (ValueError, TypeError, KeyError, AttributeError, OSError, yaml.YAMLError)
 
+# Login: with neither set the app is open, as when it runs on the show machine.
+USERS_ENV = "SHOW_ORCHESTRATOR_USERS"        # "name:password,name:password"
+PASSWORD_ENV = "SHOW_ORCHESTRATOR_PASSWORD"  # one password, for the user "show"
+SECRET_ENV = "SHOW_ORCHESTRATOR_SECRET"      # signs the login cookie; default: derived from the users
+PASSWORD_USER = "show"
+SESSION_DAYS = 30
+
+
+def users_from_env(environ=os.environ) -> dict[str, str]:
+    """The users who may log in, {name: password}, from SHOW_ORCHESTRATOR_USERS and SHOW_ORCHESTRATOR_PASSWORD."""
+    users = {}
+    for entry in re.split(r"[,;\n]", environ.get(USERS_ENV) or ""):
+        name, sep, password = entry.strip().partition(":")
+        if sep and name and password:
+            users[name] = password
+    if environ.get(PASSWORD_ENV):
+        users.setdefault(PASSWORD_USER, environ[PASSWORD_ENV])
+    return users
+
+
+def check_login(users: dict[str, str], name: str | None, password: str | None) -> bool:
+    expected = users.get(name or "")
+    return expected is not None and hmac.compare_digest((password or "").encode(), expected.encode())
+
+
+def safe_next(target: str | None) -> str:
+    """Where to go after logging in: a path on this site only."""
+    return target if target and target.startswith("/") and not target.startswith("//") and "\\" not in target else "/"
 
 def find_show_files(root: Path) -> list[str]:
     """Show definitions next to the app and anywhere under shows/, relative to root."""
@@ -94,6 +134,9 @@ def describe_show(show: Show, lock_path: Path | None) -> dict:
         "gap": reaper.gap if reaper else None,
         "routing_profiles": list((reaper.routing if reaper else None) or {}),
         "default_routing": reaper.default_routing if reaper else None,
+        # the show's madmapper: section, for the MadMapper tab's defaults
+        "madmapper": show.madmapper.model_dump() if show.madmapper else {},
+        "effect_types": [str(effect_type) for effect_type in show.effects],
         "songs": songs,
         "effects": [
             {
@@ -118,6 +161,41 @@ def validate_source(text: str, suffix: str) -> None:
         Parser().load_show(candidate)
 
 
+def build_options(data) -> tuple[int, float | None]:
+    """The velocity and gap a build or bundle asks for; ValueError with a message for the page when bad."""
+    velocity = data.get("velocity")
+    try:
+        velocity = DEFAULT_VELOCITY if velocity in (None, "") else int(velocity)
+    except (TypeError, ValueError):
+        raise ValueError("Velocity must be a number") from None
+    if not 1 <= velocity <= 127:
+        raise ValueError("Velocity must be between 1 and 127")
+    gap = data.get("gap")
+    if gap in (None, ""):
+        return velocity, None  # the show's reaper: gap:, else the default
+    try:
+        gap = float(gap)
+    except (TypeError, ValueError):
+        raise ValueError("The gap between songs must be a number of seconds") from None
+    if not gap >= 0:  # also refuses NaN
+        raise ValueError("The gap between songs can't be negative")
+    return velocity, gap
+
+
+def upload_name(filename: str | None) -> str:
+    """An uploaded file's name made safe to save: no folders, nothing Windows or a Mac refuses in a name."""
+    name = re.split(r"[\\/]", filename or "")[-1]
+    name = re.sub(r'[<>:"|?*\x00-\x1f]', "_", name).strip(" .")
+    return name
+
+
+def upload_folder(show: str) -> Path:
+    """The folder (relative to root) a show's uploaded files go into: its own folder, or shows/ for a show
+    in the root."""
+    folder = Path(show).parent
+    return Path("shows") if folder == Path(".") else folder
+
+
 def save_show_text(file: Path, text: str) -> None:
     """Replace a show file with `text`, unless the result would not load."""
     validate_source(text, file.suffix)
@@ -126,8 +204,22 @@ def save_show_text(file: Path, text: str) -> None:
     file.write_text(text, encoding="utf-8", newline=newline)
 
 
-def create_app(root: Path) -> Flask:
+def create_app(root: Path, users: dict[str, str] | None = None, secret: str | None = None) -> Flask:
+    """The web UI over the shows under `root`. `users` ({name: password}; default: the environment's) turns on the
+    login; with none the app is open."""
     app = Flask(__name__)
+    users = users_from_env() if users is None else users
+    secret = secret or os.environ.get(SECRET_ENV)
+    # Derived from the users when not given, so a restart keeps everyone logged in and a changed password logs out.
+    app.secret_key = secret or hashlib.sha256(
+        b"show-orchestrator\0" + "\0".join(f"{n}:{p}" for n, p in sorted(users.items())).encode()
+    ).hexdigest()
+    app.config.update(
+        MAX_CONTENT_LENGTH=MAX_UPLOAD_BYTES,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        PERMANENT_SESSION_LIFETIME=timedelta(days=SESSION_DAYS),
+    )
 
     def error(message: str, status: int = 400):
         return jsonify(error=message), status
@@ -135,6 +227,45 @@ def create_app(root: Path) -> Flask:
     def show_file(name: str | None) -> Path | None:
         # Only files the listing offers, so a request can't read arbitrary paths.
         return root / name if name in find_show_files(root) else None
+
+    def current_user() -> str | None:
+        name = session.get("user")
+        if name in users:  # a user removed since the cookie was set is logged out
+            return name
+        auth = request.authorization  # scripts send HTTP basic instead of logging in
+        if auth and auth.type == "basic" and check_login(users, auth.username, auth.password):
+            return auth.username
+        return None
+
+    @app.before_request
+    def require_login():
+        if not users or request.endpoint in ("login", "static") or current_user():
+            return None
+        if request.path.startswith("/api/"):
+            # No WWW-Authenticate: the browser would answer the page's fetch calls with its own password box.
+            return error("Log in first", 401)
+        return redirect(url_for("login", next=request.full_path.rstrip("?")))
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        target = safe_next(request.values.get("next"))
+        if not users:
+            return redirect(target)
+        failed = False
+        if request.method == "POST":
+            name = request.form.get("user", "").strip()
+            if check_login(users, name, request.form.get("password")):
+                session.clear()
+                session["user"] = name
+                session.permanent = True
+                return redirect(target)
+            failed = True
+        return render_template("login.html", next=target, failed=failed, user=request.form.get("user", "")), (401 if failed else 200)
+
+    @app.route("/logout", methods=["GET", "POST"])
+    def logout():
+        session.clear()
+        return redirect(url_for("login"))
 
     @app.get("/")
     def index():
@@ -145,6 +276,8 @@ def create_app(root: Path) -> Flask:
             default_velocity=DEFAULT_VELOCITY,
             default_gap=DEFAULT_SONG_GAP,
             default_output_dir=DEFAULT_OUTPUT_DIR,
+            user=current_user() if users else None,
+            upload_accept=",".join(sorted(MEDIA_SUFFIXES | SHOW_SUFFIXES)),
         )
 
     @app.get("/api/shows")
@@ -208,15 +341,147 @@ def create_app(root: Path) -> Flask:
     def media():
         return jsonify(files=find_media_files(root))
 
+    @app.post("/api/upload")
+    def upload():
+        """Add files to a show: media into its media/ folder, show files (e.g. a lights timeline to include)
+        into its own folder. A file of the same name is replaced only with replace=1."""
+        show = request.form.get("show")
+        if show_file(show) is None:
+            return error("Unknown show file", 404)
+        uploads = request.files.getlist("file")
+        if not uploads:
+            return error("No files sent")
+        targets = []
+        for upload in uploads:
+            name = upload_name(upload.filename)
+            suffix = Path(name).suffix.lower()
+            if suffix in MEDIA_SUFFIXES:
+                folder = upload_folder(show) / "media"
+            elif suffix in SHOW_SUFFIXES:
+                folder = upload_folder(show)
+            else:
+                allowed = ", ".join(sorted(MEDIA_SUFFIXES | SHOW_SUFFIXES))
+                return error(f"{upload.filename}: only these kinds of files can be added: {allowed}")
+            if not Path(name).stem:
+                return error(f"{upload.filename!r} is not a usable file name")
+            targets.append((upload, folder / name))
+        existing = [target.as_posix() for _, target in targets if (root / target).exists()]
+        if existing and request.form.get("replace") != "1":
+            return jsonify(error="These files already exist: " + ", ".join(existing), exists=existing), 409
+        for upload, target in targets:
+            path = root / target
+            path.parent.mkdir(parents=True, exist_ok=True)
+            partial = path.with_name(path.name + ".part")
+            upload.save(partial)
+            partial.replace(path)  # a cut-off upload never leaves half a file under the real name
+        return jsonify(saved=[target.as_posix() for _, target in targets])
+
+    @app.post("/api/bundle")
+    def bundle():
+        """Build a show into a zip (project, MIDI, show files, media) to download from /api/bundle/<name>."""
+        data = request.get_json()
+        file = show_file(data.get("file"))
+        if file is None:
+            return error("Unknown show file", 404)
+        try:
+            velocity, gap = build_options(data)
+        except ValueError as exc:
+            return error(str(exc))
+        folder = root / BUNDLE_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{file.stem}.zip"
+        partial = folder / f"{file.stem}.zip.part"
+        try:
+            with open(partial, "wb") as out:
+                write_bundle(root, file.relative_to(root), out, velocity=velocity, gap=gap,
+                             routing=data.get("routing"), note_lock=data.get("note_lock", True))
+            partial.replace(target)
+        except SHOW_ERRORS as exc:
+            partial.unlink(missing_ok=True)
+            return error(str(exc))
+        return jsonify(download=url_for("download_bundle", name=target.name), size=target.stat().st_size)
+
+    @app.get("/api/bundle/<name>")
+    def download_bundle(name: str):
+        return send_from_directory(root / BUNDLE_DIR, name, as_attachment=True)
+
+    @app.post("/api/madmapper")
+    def madmapper():
+        """Patch an uploaded MadMapper project (a .mad, or a .madproject folder zipped) for a show, as
+        madmapper_patch.py does: the report, and with dry_run=1 nothing to download."""
+        file = show_file(request.form.get("show"))
+        if file is None:
+            return error("Unknown show file", 404)
+        upload = request.files.get("project")
+        if upload is None or not upload.filename:
+            return error("No MadMapper project sent")
+        form = request.form
+        fades_from_audio = {"on": True, "off": False}.get(form.get("fades_from_audio", ""))
+        try:
+            threshold = form.get("silence_threshold", "").strip()
+            silence_threshold = float(threshold) if threshold else None
+            if silence_threshold is not None and not math.isfinite(silence_threshold):
+                raise ValueError
+        except ValueError:
+            return error("The silence threshold must be a number of dBFS")
+        effect_types = form.getlist("types") or None
+        if effect_types and any(t not in {str(e) for e in EffectType} for t in effect_types):
+            return error(f"Unknown effect type in {effect_types}")
+        dry_run = form.get("dry_run") == "1"
+        lock_path = lock_path_for(file) if form.get("note_lock", "1") != "0" else None
+        with tempfile.TemporaryDirectory() as tmp:
+            received = Path(tmp) / "upload"
+            upload.save(received)
+            try:
+                result, output = patch_upload(
+                    received, upload_name(upload.filename), Parser().load_show(file), lock_path,
+                    root / MADMAPPER_DIR, dry_run=dry_run,
+                    effect_types=effect_types, device=form.get("device", "").strip() or DEFAULT_DEVICE,
+                    fades_from_audio=fades_from_audio, silence_threshold=silence_threshold,
+                    fades=parse_fades(form.get("fades", "")),
+                )
+            except SHOW_ERRORS as exc:  # MadFileError and CueMatchError are ValueErrors
+                return error(str(exc))
+        report = result.report
+
+        def cue(cue) -> dict:
+            return {"cue": cue.name, "bank": cue.bank}
+
+        return jsonify(
+            patched=[{**cue(c), "effect": effect_id, "note": note, "note_name": note_name(note), "channel": channel}
+                     for effect_id, c, note, channel in report.patched],
+            unmatched_effects=[{"effect": e.id, "note": e.note, "channel": e.channel}
+                               for e in report.unmatched_effects],
+            unmatched_cues=[cue(c) for c in report.unmatched_cues],
+            fades_from_audio=result.fades_from_audio,
+            silence_threshold=result.silence_threshold,
+            audio_fades=[{**cue(f.cue), "old": f.old_fade, "fade": f.fade, "reason": f.reason}
+                         for f in result.audio_fades],
+            hand_fades=[{**cue(f.cue), "old": f.old_fade, "fade": f.fade} for f in result.hand_fades],
+            file=output.name if output else None,
+            download=url_for("download_madmapper", name=output.name) if output else None,
+        )
+
+    @app.get("/api/madmapper/<name>")
+    def download_madmapper(name: str):
+        return send_from_directory(root / MADMAPPER_DIR, name, as_attachment=True)
+
     @app.get("/api/ports")
     def ports():
-        return jsonify(ports=mido.get_output_names())
+        try:
+            return jsonify(ports=mido.get_output_names())
+        except (ImportError, OSError, RuntimeError, SystemError):  # no MIDI system at all, e.g. in a container on a server
+            return jsonify(ports=[])
 
     @app.post("/api/play")
     def play():
         data = request.get_json()
         port_name = data.get("port")
-        if port_name not in mido.get_output_names():
+        try:
+            available = mido.get_output_names()
+        except (ImportError, OSError, RuntimeError, SystemError):
+            available = []
+        if port_name not in available:
             return error("MIDI port not available")
         try:
             note, channel = int(data["note"]), int(data["channel"])
@@ -239,21 +504,9 @@ def create_app(root: Path) -> Flask:
         if backend_name is not None and backend_name not in AVAILABLE_BACKENDS:
             return error(f"Unknown backend: {backend_name}")
         try:
-            velocity = int(data.get("velocity", DEFAULT_VELOCITY))
-        except (TypeError, ValueError):
-            return error("Velocity must be a number")
-        if not 1 <= velocity <= 127:
-            return error("Velocity must be between 1 and 127")
-        gap = data.get("gap")
-        if gap in (None, ""):
-            gap = None  # the show's reaper: gap:, else the default
-        else:
-            try:
-                gap = float(gap)
-            except (TypeError, ValueError):
-                return error("The gap between songs must be a number of seconds")
-            if not gap >= 0:  # also refuses NaN
-                return error("The gap between songs can't be negative")
+            velocity, gap = build_options(data)
+        except ValueError as exc:
+            return error(str(exc))
 
         output_dir = root / (data.get("output_dir") or DEFAULT_OUTPUT_DIR)
         lock_path = lock_path_for(file) if data.get("note_lock", True) else None
@@ -295,6 +548,8 @@ def main():
     arg_parser.add_argument("--port", type=int, default=5000, help="Port to listen on (default: 5000)")
     args = arg_parser.parse_args()
 
+    if not users_from_env() and args.host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"Warning: listening on {args.host} with no login; set {USERS_ENV} or {PASSWORD_ENV} to require one.")
     # Media paths in show definitions are relative to the working directory, as in main.py.
     create_app(Path.cwd()).run(host=args.host, port=args.port)
 

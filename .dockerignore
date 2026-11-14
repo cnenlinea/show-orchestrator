@@ -1,0 +1,12 @@
+# Only the web app, its package and templates, and the shows (with their media) go into the image.
+**
+!Dockerfile
+!requirements.txt
+!main.py
+!web.py
+!show_orchestrator/
+!templates/
+!shows/
+**/__pycache__
+**/*.bak
+**/*.part

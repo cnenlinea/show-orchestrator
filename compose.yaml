@@ -1,0 +1,24 @@
+# The web UI on a server. Open http://<server>:8771 and log in.
+# On the Arcane host use tools/arcane_deploy.py instead (it builds and runs the same container through Arcane's API).
+services:
+  web:
+    build: .
+    image: show-orchestrator:latest
+    container_name: show-orchestrator
+    restart: unless-stopped
+    ports:
+      - "8771:8771"
+    environment:
+      # With neither set the app is open to anyone who can reach it.
+      # SHOW_ORCHESTRATOR_USERS: "name:password,name:password"; SHOW_ORCHESTRATOR_PASSWORD: one password, user "show".
+      SHOW_ORCHESTRATOR_USERS: ${SHOW_ORCHESTRATOR_USERS:-}
+      SHOW_ORCHESTRATOR_PASSWORD: ${SHOW_ORCHESTRATOR_PASSWORD:-}
+    volumes:
+      - shows:/app/shows          # show files, note locks and media, as edited on the server
+      - build:/app/build          # what Build writes
+
+volumes:
+  shows:
+    name: show-orchestrator-shows   # fixed names: the volumes outlive the project and any rename of it
+  build:
+    name: show-orchestrator-build

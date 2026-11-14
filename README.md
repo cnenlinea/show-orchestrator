@@ -95,6 +95,47 @@ The **Edit** tab is a graphical editor for the selected show, the same for CSV a
 
 Fields that are missing or malformed are outlined in red, and saving (button or Ctrl+S) is refused if the result would not load, so the editor can't leave you with a broken show. Saving rewrites the file: a CSV keeps its header and row order, while a YAML file loses any comments and hand formatting. The **Source** tab still edits the file as text, with the same check on save.
 
+#### Bundles and adding files
+
+**Download bundle** (next to **Build**, with the same velocity, gap, routing and note-lock options) gives a zip of the show that runs on a machine that has none of its files:
+
+```
+musical_2026/
+  musical_2026.rpp                          open this in REAPER
+  *.mid                                     the generated cues (and split MIDI pieces)
+  shows/musical_2026/musical_2026.yaml      the show file, its .notes.lock and included files
+  shows/musical_2026/media/...              and every media file, at the paths the show gives
+```
+
+The project references the media at those paths, relative to its own folder, so each file is stored once. Unzip the bundle and open the `.rpp`. The folder is also a show-orchestrator root: run `python <repo>/main.py shows/musical_2026/musical_2026.yaml --orchestrate reaper` inside it to rebuild, or point `madmapper_patch.py` at the same show file. A show whose media lies outside the project root (an absolute path elsewhere) can't be bundled: move the media under `shows/` first. The latest bundle of each show is kept in `build/bundles/`.
+
+**Add files** uploads files into the selected show's folders. Audio and MIDI files go into its `media/` folder (for a show in the root, `shows/media/`), and a `.csv` or `.yaml` (such as a light-show-simulator lights timeline to `include`) goes next to the show file. A file with the same name is replaced only after you confirm. Uploads can be up to 2 GB, but a proxy in front of the server may allow less: Cloudflare's limit is 100 MB per request.
+
+#### Login
+
+With neither variable below set, the web UI is open (as on the show machine, where it listens on 127.0.0.1 only). Set one, and every page asks for a user and password first:
+
+| Variable | Purpose |
+| --- | --- |
+| `SHOW_ORCHESTRATOR_USERS` | Named users: `name:password,name:password` |
+| `SHOW_ORCHESTRATOR_PASSWORD` | One password, for the user `show` |
+| `SHOW_ORCHESTRATOR_SECRET` | Optional: signs the login cookie. By default it's derived from the users, so a restart keeps everyone logged in and changing a password logs everyone out |
+
+A browser logs in at `/login` and stays logged in for 30 days (**Log out** in the header). Scripts can send HTTP basic auth to the `/api/` routes instead. Without a login the API answers 401.
+
+#### On a server (Arcane)
+
+The [Dockerfile](Dockerfile) runs the web UI on port 8771. The shows and their media are in the volume `show-orchestrator-shows`, and what **Build** writes is in `show-orchestrator-build`. The image carries this machine's `shows/` folder. On each start, the container copies a file into the volume only if the volume doesn't have it yet, so a show edited on the server survives a redeploy. A show you change here reaches the server only after its copy there is deleted. The server has no MIDI ports, so the note audition is empty there. Download a bundle to take a show back to a local machine, and use **Add files** to send it new media.
+
+To deploy to the Arcane host (the same way as SauronsEye's replay server):
+
+```console
+python tools/arcane_deploy.py deploy     # upload the build context, build the image on the host, (re)start the container
+python tools/arcane_deploy.py status     # workspace, last builds, container, volumes
+```
+
+It reads `arcane_server`, `arcane_api` (an Arcane API key) and the login (`orchestrator_users`, or `orchestrator_password`; otherwise SauronsEye's `replay_password`) from the environment, this repository's `.env`, or `H:\SauronsEye\.env`, in that order. It won't start the container without a login unless given `--open`. On a host with Docker Compose, `docker compose up -d --build` with [compose.yaml](compose.yaml) does the same.
+
 ### Note mapper GUI
 
 ```console
@@ -127,6 +168,28 @@ Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes th
 | `--fade CUE=SECONDS` | Set a cue's fade by hand, e.g. `--fade "0. Triumph=0.2"` to land on a hit; repeat for several. Adds to the show's `madmapper: fades:`; wins over `--fades-from-audio` |
 | `--dry-run` | Print the report without saving |
 | `--no-note-lock` | Ignore the note lock file |
+
+**In the web UI**, the **MadMapper** tab does the same for the selected show, with the same options, and works on a server. **Preview** shows the report without saving anything, and **Patch & download** also gives you the patched copy. The project you send is never changed. You can send:
+
+- a MadMapper 5 `.mad`. It comes back as `<name>_midi.mad`.
+- a MadMapper 6 `.madproject` folder, zipped (Finder: Compress). It comes back as `<name>_midi.madproject.zip`, made the way the CLI makes the folder, with its `projectPath` pointing next to the original.
+- just the `.mad` from inside a MadMapper 6 folder (Finder: Show Package Contents), to avoid uploading the media the folder holds. It comes back under the same name: put it into a copy of the folder in place of the original `.mad`.
+
+The API is `POST /api/madmapper`, a multipart form:
+
+| Field | Purpose |
+| --- | --- |
+| `show` | The show file, as `/api/shows` lists it |
+| `project` | The `.mad` or `.zip` |
+| `types` | Effect type to map; repeat for several (default `projection`) |
+| `device` | MadMapper MIDI input (default `all`) |
+| `fades_from_audio` | `on`, `off`, or empty for the show's setting |
+| `silence_threshold` | dBFS |
+| `fades` | `CUE=SECONDS` lines |
+| `dry_run` | `1` to report without saving |
+| `note_lock` | `0` to ignore the note lock |
+
+It answers with the report as JSON. Unless it was a dry run, the report includes a `download` URL for the patched copy (`GET /api/madmapper/<file>`).
 
 MadMapper names notes from `C-2` = 0 (so note 60 is `C3`) and numbers channels from 1, so effect channel 0 shows up as `Midi 1`. The `.mad` reader/writer is [show_orchestrator/madfile.py](show_orchestrator/madfile.py); a project loaded and saved unchanged comes back byte-for-byte identical.
 
@@ -228,6 +291,8 @@ reaper:                     # main.py / the web UI's Build
       Letras: 65
   split_midi:               # MIDI track in extra-track .mid files -> its own REAPER track
     Letras ReWorship: Letras
+  no_markers:               # songs that get no project marker (e.g. scene-change music)
+  - Escenografia 1
 madmapper:                  # madmapper_patch.py
   fades_from_audio: true    # --fades-from-audio
   silence_threshold: -40    # --silence-threshold
@@ -292,6 +357,9 @@ madmapper_scenes.py          CLI: scaffold MadMapper scenes (group, quad, trigge
 reaper_routing.py            CLI: read a machine's MIDI routing from a saved .rpp
 web.py                       Flask web UI: timeline, editor, note audition, build
 templates/index.html         the web UI's single page
+templates/login.html         its login page
+Dockerfile, compose.yaml     the web UI in a container, for a server
+tools/arcane_deploy.py       build and run that container on the Arcane host
 show_orchestrator/
   parser.py                  YAML/CSV → Show
   models.py                  pydantic models + MM:SS helpers
@@ -300,7 +368,9 @@ show_orchestrator/
   generator.py               Show → .mid files (mido)
   madfile.py                 MadMapper .mad reader/writer (Qt QDataStream)
   madbanks.py                where cues/timelines live in each MadMapper version
-  madmapper.py               effects → MadMapper cue MIDI triggers
+  madmapper.py               effects → MadMapper cue MIDI triggers (patch_show: all of madmapper_patch.py)
+  madupload.py               patch an uploaded .mad or zipped .madproject (the web UI's MadMapper tab)
+  bundle.py                  a show as one zip: REAPER project, MIDI, show files, media
   madscenes.py               scenes → MadMapper groups, quads, cues/timelines
   audio.py                   when a song becomes audible (fades from silence)
   backends/reaper.py         Show + .mid files → .rpp (reathon)

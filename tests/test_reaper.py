@@ -315,3 +315,32 @@ def test_rebuilding_picks_up_media_that_changed_since(tmp_path):
     finally:
         copy.chmod(0o644)
     assert copy.stat().st_mtime_ns == before
+
+
+def build_two_songs(tmp_path, reaper=None):
+    from show_orchestrator.models import ReaperSettings
+
+    output_dir = tmp_path / "build"
+    output_dir.mkdir()
+    midi_files = {
+        name: {EffectType.LIGHTS: {"file_path": output_dir / f"{name}_lights.mid", "duration": 3.0}}
+        for name in ("One", "Two")
+    }
+    show = two_song_show(tmp_path)
+    show.reaper = ReaperSettings(**(reaper or {}))
+    backend = ReaperBackend()
+    backend.create_project(show, midi_files, output_dir)
+    backend.save_project(output_dir / "show.rpp")
+    return [line.strip() for line in (output_dir / "show.rpp").read_text().splitlines()
+            if line.strip().startswith("MARKER")]
+
+
+def test_songs_in_no_markers_get_no_marker(tmp_path):
+    markers = build_two_songs(tmp_path, {"no_markers": ["One"]})
+    # the song keeps its place on the timeline; the markers left are numbered from the start
+    assert [m.split(' "')[0] + ' "' + m.split('"')[1] + '"' for m in markers] == ['MARKER 0 10.5 "Two"']
+
+
+def test_no_markers_must_name_songs_of_the_show(tmp_path):
+    with pytest.raises(ValueError, match="'Tres'.*its songs are 'One', 'Two'"):
+        build_two_songs(tmp_path, {"no_markers": ["Tres"]})

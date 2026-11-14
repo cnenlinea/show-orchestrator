@@ -28,7 +28,8 @@ from show_orchestrator.madbanks import (
     MM5, MM6, MM6_SHARED, TRIGGER_URL_PREFIXES, TriggerBanks, trigger_url,
 )
 from show_orchestrator.audio import DEFAULT_SILENCE_DB, AudioError, silence_after
-from show_orchestrator.models import Effect, Show
+from show_orchestrator.models import Effect, EffectType, MadMapperSettings, Show
+from show_orchestrator.notes import assign_missing_notes
 
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 DEFAULT_DEVICE = "all"
@@ -327,3 +328,64 @@ def fades_to_audio(
         set_trigger_fade(project, cue, fade)
         results.append(FadeResult(effect_id, cue, old_fade, fade))
     return results
+
+
+@dataclass
+class HandFade:
+    cue: Cue
+    old_fade: float | None
+    fade: float
+
+
+@dataclass
+class ShowPatch:
+    """What `patch_show` did: the triggers, the fades from the audio, the fades set by hand."""
+    report: PatchReport
+    fades_from_audio: bool
+    silence_threshold: float
+    audio_fades: list[FadeResult] = field(default_factory=list)
+    hand_fades: list[HandFade] = field(default_factory=list)
+
+
+def patch_show(
+    project: MadProject,
+    show: Show,
+    lock_path: Path | None,
+    effect_types: Iterable[str] | None = None,
+    device: str = DEFAULT_DEVICE,
+    fades_from_audio: bool | None = None,
+    silence_threshold: float | None = None,
+    fades: Iterable[tuple[str, float]] = (),
+) -> ShowPatch:
+    """Everything madmapper_patch.py does to a project, for one show: give every cue named like an effect of
+    `effect_types` (default projection) that effect's note (assigned through the note lock at `lock_path` as the
+    MIDI files get them), then fade cues in over the silence after them when `fades_from_audio`, then apply the
+    fades given by hand. The arguments win over the show's `madmapper:` settings, which win over the defaults;
+    `fades` adds to the show's (winning for the same cue). CueMatchError when an effect matches several cues or a
+    fade names no cue; the project may then be half patched, so don't save it."""
+    settings = show.madmapper or MadMapperSettings()
+    if fades_from_audio is None:
+        fades_from_audio = bool(settings.fades_from_audio)
+    silence_threshold = next(v for v in (silence_threshold, settings.silence_threshold, DEFAULT_SILENCE_DB)
+                             if v is not None)
+    hand = dict(settings.fades or {})
+    hand.update(fades)
+    effect_mapping = assign_missing_notes(show.effects, 0, lock_path)
+    effects = [
+        effect
+        for effect_type in (effect_types or [str(EffectType.PROJECTION)])
+        for effect in effect_mapping.get(EffectType(effect_type), {}).values()
+    ]
+    result = ShowPatch(patch_cue_triggers(project, effects, device), fades_from_audio, silence_threshold)
+    if fades_from_audio:
+        result.audio_fades = fades_to_audio(project, show, result.report.patched, silence_threshold)
+    cues = list_cues(project)
+    for name, seconds in hand.items():
+        matching = [cue for cue in cues if normalize_name(cue.name) == normalize_name(name)]
+        if not matching:
+            raise CueMatchError(f"fade for {name!r}: the project has no cue of that name")
+        for cue in matching:
+            old = trigger_fade(project, cue)
+            set_trigger_fade(project, cue, seconds)
+            result.hand_fades.append(HandFade(cue, old, seconds))
+    return result

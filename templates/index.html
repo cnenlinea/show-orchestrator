@@ -87,6 +87,14 @@
   #status { margin: 8px 0 0; }
   .error, #show-error, #doc-error { color: var(--error); }
   .ok { color: var(--ok); }
+  .mad-form { max-width: 560px; }
+  .mad-form label.column { flex-direction: column; align-items: stretch; }
+  .mad-form textarea {
+    font: 13px/1.5 ui-monospace, Consolas, monospace; color: inherit; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; resize: vertical;
+  }
+  #mad-types label { gap: 4px; }
+  #mad-report h3 { font-size: 13px; margin: 16px 0 6px; }
 </style>
 </head>
 <body>
@@ -97,6 +105,7 @@
   <label>MIDI port <select id="port-select"></select></label>
   <button id="refresh-ports" title="Look for MIDI ports again">↻</button>
   <span id="summary" class="muted"></span>
+  {% if user %}<span class="muted" style="margin-left: auto">{{ user }} · <a href="{{ url_for('logout') }}">Log out</a></span>{% endif %}
 </header>
 
 <main>
@@ -105,6 +114,7 @@
       <button id="tab-timeline" class="active">Timeline</button>
       <button id="tab-edit">Edit</button>
       <button id="tab-source" title="The show file as text">Source</button>
+      <button id="tab-madmapper" title="Set a MadMapper project's cue triggers to this show's notes">MadMapper</button>
     </nav>
     <p id="show-error"></p>
     <div id="view-timeline">
@@ -139,6 +149,34 @@
       </div>
       <textarea id="editor" spellcheck="false" wrap="off"></textarea>
     </section>
+    <section id="view-madmapper" hidden>
+      <h2>Patch a MadMapper project</h2>
+      <p class="muted">Every cue (in MadMapper 6, every timeline) named like an effect gets a MIDI trigger on that effect's note and channel: the notes the generated MIDI files play. You get a patched copy to download; the project you send is not changed. Save and close the project in MadMapper first.</p>
+      <p class="muted">Send a MadMapper 5 <code>.mad</code>, or a MadMapper 6 <code>.madproject</code> folder zipped (Finder: Compress). A MadMapper 6 folder can hold its media, so to send less, send only the <code>.mad</code> inside it (Show Package Contents). The patched <code>.mad</code> comes back under the same name: put it into a copy of the folder in place of the original.</p>
+      <div class="build-form mad-form">
+        <label>Project <input id="mad-project" type="file" accept=".mad,.zip"></label>
+        <label>Effect types <span id="mad-types" class="pair"></span></label>
+        <label title="The MadMapper MIDI input the triggers listen on">MIDI input <input id="mad-device" placeholder="all (any input)"></label>
+        <label title="Fade each cue in over the silence that follows it in its song's audio, so the picture arrives with the music">Fades from the audio
+          <select id="mad-fades-audio">
+            <option value="" id="mad-fades-audio-default">show's setting</option>
+            <option value="on">on</option>
+            <option value="off">off</option>
+          </select>
+        </label>
+        <label title="With fades from the audio, audio quieter than this counts as silence">Silence threshold (dBFS) <input id="mad-threshold" type="number" step="1"></label>
+        <label class="column">Fades by hand, one per line (these win over the audio and the show's)
+          <textarea id="mad-fades" rows="3" spellcheck="false" placeholder="0. Triumph=0.2"></textarea>
+        </label>
+        <p id="mad-show-fades" class="muted" hidden></p>
+        <div class="pair">
+          <button id="mad-preview" class="grow" title="See what would change, without a download">Preview</button>
+          <button id="mad-patch" class="primary grow">Patch &amp; download</button>
+        </div>
+      </div>
+      <p id="mad-status" class="status"></p>
+      <div id="mad-report"></div>
+    </section>
   </div>
   <aside>
     <div>
@@ -157,9 +195,18 @@
           <select id="routing"><option value="">none</option></select>
         </label>
         <label>Use note lock <input id="note-lock" type="checkbox" checked></label>
-        <button id="build" class="primary">Build</button>
+        <div class="pair">
+          <button id="build" class="primary grow">Build</button>
+          <button id="bundle" class="grow" title="A zip with the REAPER project, the MIDI files, the show file and all its media, ready to open on another machine">Download bundle</button>
+        </div>
       </div>
       <p id="status" class="status"></p>
+    </div>
+    <div>
+      <h2>Add files</h2>
+      <p class="muted">Audio and MIDI go into the show's <code>media/</code> folder; a .csv or .yaml (such as a lights timeline to include) next to the show file.</p>
+      <input id="upload" type="file" multiple accept="{{ upload_accept }}">
+      <p id="upload-status" class="status"></p>
     </div>
     <div>
       <h2>Effects</h2>
@@ -202,6 +249,10 @@ async function api(url, body, method) {
   };
   if (method) options.method = method;
   const response = await fetch(url, options);
+  if (response.status === 401) {  // the login ran out (or the password changed): back to the login page
+    location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+    throw new Error("Log in again");
+  }
   const data = await response.json().catch(() => ({error: `Server error (${response.status})`}));
   if (!response.ok) throw new Error(data.error || `Server error (${response.status})`);
   return data;
@@ -330,6 +381,7 @@ async function loadShow() {
     assigned = new Map(show.effects.map((effect) => [effectKey(effect), effect]));
     renderShow(show);
     showBuildSettings(show);
+    showMadSettings(show);
   } catch (err) {
     assigned = new Map();
     $("summary").textContent = "";
@@ -349,13 +401,9 @@ async function build() {
   setStatus("Building…");
   try {
     const result = await api("/api/build", {
-      file: $("show-select").value,
+      ...buildOptions(),
       output_dir: $("output-dir").value,
       orchestrate: $("orchestrate").value,
-      velocity: $("velocity").value,
-      gap: $("gap").value,
-      routing: $("routing").value,
-      note_lock: $("note-lock").checked,
     });
     const lines = [`Wrote ${result.midi_files.length} MIDI files to ${result.output_dir}`];
     if (result.project) lines.push(`Project: ${result.project}`);
@@ -364,6 +412,180 @@ async function build() {
   } catch (err) {
     setStatus(err.message, "error");
   }
+}
+
+function buildOptions() {
+  return {
+    file: $("show-select").value,
+    velocity: $("velocity").value,
+    gap: $("gap").value,
+    routing: $("routing").value,
+    note_lock: $("note-lock").checked,
+  };
+}
+
+async function downloadBundle() {
+  setStatus("Preparing the bundle… (copying every media file can take a while)");
+  $("bundle").disabled = true;
+  try {
+    const result = await api("/api/bundle", buildOptions());
+    setStatus(`Downloading ${(result.size / 1e6).toFixed(1)} MB…`, "ok");
+    // a download link rather than navigating, so the page (and any unsaved edit) stays
+    h("a", {href: result.download, download: ""}).click();
+  } catch (err) {
+    setStatus(err.message, "error");
+  } finally {
+    $("bundle").disabled = false;
+  }
+}
+
+function sendFiles(files, replace) {
+  const form = new FormData();
+  form.append("show", $("show-select").value);
+  if (replace) form.append("replace", "1");
+  for (const file of files) form.append("file", file);
+  return postForm("/api/upload", form, "upload-status");
+}
+
+// POST a form with files, showing the upload's progress in `statusId`; resolves to {status, data}.
+function postForm(url, form, statusId) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();  // not fetch: XHR reports upload progress
+    request.open("POST", url);
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const percent = Math.round(100 * event.loaded / event.total);
+        setStatus(percent < 100 ? `Uploading… ${percent}%` : "Working…", "muted", statusId);
+      }
+    };
+    request.onload = () => {
+      if (request.status === 401) {
+        location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+        return reject(new Error("Log in again"));
+      }
+      let data;
+      try { data = JSON.parse(request.responseText); } catch { data = {error: `Server error (${request.status})`}; }
+      resolve({status: request.status, data});
+    };
+    request.onerror = () => reject(new Error("The upload was cut off"));
+    request.send(form);
+  });
+}
+
+async function uploadFiles() {
+  const files = [...$("upload").files];
+  if (!files.length) return;
+  try {
+    let {status, data} = await sendFiles(files, false);
+    if (status === 409 && confirm(`${data.error}\n\nReplace them?`)) ({status, data} = await sendFiles(files, true));
+    if (status >= 400) throw new Error(data.error || `Server error (${status})`);
+    setStatus(`Added:\n${data.saved.join("\n")}`, "ok", "upload-status");
+    loadMedia();
+    loadShows();
+  } catch (err) {
+    setStatus(err.message, "error", "upload-status");
+  } finally {
+    $("upload").value = "";
+  }
+}
+
+// ---- MadMapper: patch an uploaded project's cue triggers to the show's notes (madmapper_patch.py).
+const MAD_DEFAULT_THRESHOLD = -40;
+
+function showMadSettings(show) {
+  const settings = show.madmapper || {};
+  const checked = new Set([...$("mad-types").querySelectorAll("input:checked")].map((box) => box.value));
+  if (!checked.size) checked.add("projection");
+  $("mad-types").replaceChildren(...TYPES.map((type) => h("label", {title: show.effect_types.includes(type) ? "" : "this show has none"},
+    h("input", {type: "checkbox", value: type, checked: checked.has(type)}),
+    h("span", {className: `dot ${type}`}), type)));
+  const audio = settings.fades_from_audio ? "on" : "off";
+  $("mad-fades-audio-default").textContent = `show's setting (${audio})`;
+  $("mad-threshold").placeholder = settings.silence_threshold ?? MAD_DEFAULT_THRESHOLD;
+  const fades = Object.entries(settings.fades || {});
+  $("mad-show-fades").hidden = !fades.length;
+  $("mad-show-fades").textContent = `The show's madmapper: fades: apply too: ${fades.map(([cue, s]) => `${cue}=${s}`).join(", ")}`;
+}
+
+function fadeText(seconds) {
+  return seconds == null ? "unset" : `${seconds} s`;
+}
+
+function table(headings, rows) {
+  return h("table", {},
+    h("tr", {}, ...headings.map((text) => h("th", {textContent: text}))),
+    ...rows.map((cells) => h("tr", {}, ...cells.map((text) => h("td", {textContent: text ?? ""})))));
+}
+
+function renderMadReport(result) {
+  const parts = [h("h3", {textContent: `${result.patched.length} cue triggers ${result.download ? "set" : "would be set"}`}),
+    table(["Cue", "Bank", "Effect", "Note", "Channel"], result.patched.map((row) =>
+      [row.cue, row.bank, row.effect, `${row.note} (${row.note_name})`, `Midi ${row.channel + 1}`]))];
+  if (result.unmatched_effects.length) {
+    parts.push(h("h3", {textContent: `Effects with no cue of the same name (${result.unmatched_effects.length})`}),
+      h("p", {className: "muted", textContent: "Rename the cue or the effect so they match (case, accents and spacing don't matter)."}),
+      table(["Effect", "Note", "Channel"], result.unmatched_effects.map((row) => [row.effect, row.note, `Midi ${row.channel + 1}`])));
+  }
+  if (result.unmatched_cues.length) {
+    parts.push(h("details", {},
+      h("summary", {textContent: `Cues left as they were (${result.unmatched_cues.length})`}),
+      table(["Cue", "Bank"], result.unmatched_cues.map((row) => [row.cue, row.bank]))));
+  }
+  if (result.fades_from_audio) {
+    parts.push(h("h3", {textContent: `Fades from the audio (silence below ${result.silence_threshold} dBFS)`}),
+      table(["Cue", "Fade"], result.audio_fades.map((row) => [row.cue,
+        row.fade == null ? `kept ${fadeText(row.old)}: ${row.reason}` : `${fadeText(row.old)} → ${row.fade} s`])));
+  }
+  if (result.hand_fades.length) {
+    parts.push(h("h3", {textContent: "Fades set by hand"}),
+      table(["Cue", "Fade"], result.hand_fades.map((row) => [row.cue, `${fadeText(row.old)} → ${row.fade} s`])));
+  }
+  $("mad-report").replaceChildren(...parts);
+}
+
+async function patchMadMapper(dryRun) {
+  const project = $("mad-project").files[0];
+  if (!project) {
+    setStatus("Choose the MadMapper project first.", "error", "mad-status");
+    return;
+  }
+  const form = new FormData();
+  form.append("show", $("show-select").value);
+  form.append("project", project);
+  for (const box of $("mad-types").querySelectorAll("input:checked")) form.append("types", box.value);
+  form.append("device", $("mad-device").value);
+  form.append("fades_from_audio", $("mad-fades-audio").value);
+  form.append("silence_threshold", $("mad-threshold").value);
+  form.append("fades", $("mad-fades").value);
+  form.append("note_lock", $("note-lock").checked ? "1" : "0");  // the Build panel's choice
+  if (dryRun) form.append("dry_run", "1");
+  for (const id of ["mad-preview", "mad-patch"]) $(id).disabled = true;
+  try {
+    const {status, data} = await postForm("/api/madmapper", form, "mad-status");
+    if (status >= 400) throw new Error(data.error || `Server error (${status})`);
+    renderMadReport(data);
+    if (data.download) {
+      setStatus(`Downloading ${data.file}`, "ok", "mad-status");
+      h("a", {href: data.download, download: ""}).click();
+    } else {
+      setStatus("Preview: nothing saved.", "muted", "mad-status");
+    }
+    loadShow();  // notes may have been assigned and locked
+  } catch (err) {
+    setStatus(err.message, "error", "mad-status");
+  } finally {
+    for (const id of ["mad-preview", "mad-patch"]) $(id).disabled = false;
+  }
+}
+
+async function loadMedia() {
+  const {files} = await api("/api/media");
+  $("media-files").replaceChildren(...files.map((value) => h("option", {value})));
+}
+
+async function loadShows() {
+  const {shows} = await api("/api/shows");
+  fillSelect($("show-select"), shows, loadedFile || localStorage.getItem("show"), "none found");
 }
 
 // ---- Graphical editor: `doc` is the show as /api/document describes it.
@@ -760,6 +982,7 @@ async function saveSource() {
 }
 
 // The two editors change the same file, so only one may hold unsaved changes.
+const TABS = ["timeline", "edit", "source", "madmapper"];
 const editors = {
   edit: {dirty: docDirty, load: loadDoc, save: saveDoc, other: "source"},
   source: {dirty: sourceDirty, load: loadSource, save: saveSource, other: "edit"},
@@ -772,7 +995,7 @@ function showTab(name) {
     other.load();
   }
   activeTab = name;
-  for (const tab of ["timeline", "edit", "source"]) {
+  for (const tab of TABS) {
     $(`view-${tab}`).hidden = tab !== name;
     $(`tab-${tab}`).classList.toggle("active", tab === name);
   }
@@ -790,7 +1013,7 @@ function selectShow() {
   loadSource();
 }
 
-for (const tab of ["timeline", "edit", "source"]) $(`tab-${tab}`).onclick = () => showTab(tab);
+for (const tab of TABS) $(`tab-${tab}`).onclick = () => showTab(tab);
 $("save-doc").onclick = saveDoc;
 $("revert-doc").onclick = () => {
   if (!docDirty() || confirm("Discard unsaved changes?")) loadDoc();
@@ -830,19 +1053,22 @@ $("refresh-ports").onclick = loadPorts;
 $("port-select").onchange = () => localStorage.setItem("port", $("port-select").value);
 $("routing").onchange = () => localStorage.setItem("routing", $("routing").value);
 $("build").onclick = build;
+$("bundle").onclick = downloadBundle;
+$("upload").onchange = uploadFiles;
+$("mad-preview").onclick = () => patchMadMapper(true);
+$("mad-patch").onclick = () => patchMadMapper(false);
+$("mad-project").onchange = () => { $("mad-report").replaceChildren(); setStatus("", "", "mad-status"); };
 
 (async () => {
-  const {shows} = await api("/api/shows");
-  fillSelect($("show-select"), shows, localStorage.getItem("show"), "none found");
+  await loadShows();
   loadedFile = $("show-select").value;
   const tab = localStorage.getItem("tab");
-  showTab(tab in editors ? tab : "timeline");
+  showTab(TABS.includes(tab) ? tab : "timeline");
   loadPorts();
   loadShow();
   loadDoc();
   loadSource();
-  const {files} = await api("/api/media");
-  $("media-files").replaceChildren(...files.map((value) => h("option", {value})));
+  loadMedia();
 })();
 </script>
 </body>

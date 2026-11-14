@@ -137,6 +137,9 @@ class ReaperSettings(BaseModel):
     # MIDI track name inside extra-track .mid files -> REAPER track it moves to, so it
     # can go to its own MIDI output (e.g. ReWorship lyric cues off the lights file)
     split_midi: dict[str, str] | None = None
+    # songs that get no project marker (e.g. scene-change music between the real songs),
+    # so the markers that are left are the songs the operator jumps to
+    no_markers: list[str] | None = None
 
     @model_validator(mode="after")
     def _default_routing_is_a_profile(self) -> "ReaperSettings":

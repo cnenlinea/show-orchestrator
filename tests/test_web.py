@@ -25,7 +25,7 @@ def root(tmp_path):
 
 @pytest.fixture
 def client(root):
-    return create_app(root).test_client()
+    return create_app(root, users={}).test_client()
 
 
 def test_index_renders(client):
@@ -190,3 +190,335 @@ def test_build_rejects_bad_gap(client, gap):
     response = client.post("/api/build", json={"file": "shows/demo/demo.csv", "gap": gap})
     assert response.status_code == 400
     assert "gap" in response.get_json()["error"]
+
+
+# --- login
+
+@pytest.fixture
+def locked(root):
+    return create_app(root, users={"ana": "s3cret"}).test_client()
+
+
+def test_users_from_env():
+    from web import users_from_env
+
+    assert users_from_env({}) == {}
+    assert users_from_env({"SHOW_ORCHESTRATOR_USERS": "ana:a:b, bo:x ,bad,:nope"}) == {"ana": "a:b", "bo": "x"}
+    assert users_from_env({"SHOW_ORCHESTRATOR_PASSWORD": "pw"}) == {"show": "pw"}
+
+
+def test_open_without_users(client):
+    assert client.get("/").status_code == 200
+    assert client.get("/api/shows").status_code == 200
+    assert client.get("/login").status_code == 302
+
+
+def test_login_required(locked):
+    page = locked.get("/")
+    assert page.status_code == 302 and "/login" in page.headers["Location"]
+    api = locked.get("/api/shows")
+    assert api.status_code == 401
+    assert "WWW-Authenticate" not in api.headers
+    assert locked.get("/login").status_code == 200
+
+
+def test_login_and_logout(locked):
+    wrong = locked.post("/login", data={"user": "ana", "password": "nope"})
+    assert wrong.status_code == 401
+    assert locked.get("/api/shows").status_code == 401
+
+    ok = locked.post("/login", data={"user": "ana", "password": "s3cret", "next": "/?x=1"})
+    assert ok.status_code == 302 and ok.headers["Location"] == "/?x=1"
+    assert locked.get("/api/shows").status_code == 200
+    assert b"Log out" in locked.get("/").data
+
+    locked.get("/logout")
+    assert locked.get("/api/shows").status_code == 401
+
+
+@pytest.mark.parametrize("target", ["//evil.example", "https://evil.example", r"/\evil.example"])
+def test_login_never_redirects_off_site(locked, target):
+    response = locked.post("/login", data={"user": "ana", "password": "s3cret", "next": target})
+    assert response.headers["Location"] == "/"
+
+
+def test_basic_auth_for_scripts(locked):
+    import base64
+
+    def basic(user, password):
+        return {"Authorization": "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()}
+
+    assert locked.get("/api/shows", headers=basic("ana", "s3cret")).status_code == 200
+    assert locked.get("/api/shows", headers=basic("ana", "wrong")).status_code == 401
+
+
+def test_changed_password_logs_out(root):
+    first = create_app(root, users={"ana": "old"}).test_client()
+    first.post("/login", data={"user": "ana", "password": "old"})
+    cookie = first.get_cookie("session")
+    later = create_app(root, users={"ana": "new"}).test_client()
+    later.set_cookie("session", cookie.value)
+    assert later.get("/api/shows").status_code == 401
+
+
+# --- bundle
+
+@pytest.fixture
+def media_show(root, monkeypatch):
+    # media paths in a show are relative to the working directory, which the app's root is
+    monkeypatch.chdir(root)
+    (root / "shows" / "demo" / "media").mkdir()
+    (root / "shows" / "demo" / "media" / "song.mp3").write_bytes(b"ID3 not really audio")
+    (root / "shows" / "demo" / "withmedia.csv").write_text(
+        "name,type,timestamp,duration,note,file\n"
+        "Song,audio,,1:00,,shows/demo/media/song.mp3\n"
+        "Blackout,lights,0:00,,2,\n",
+        encoding="utf-8",
+    )
+    return "shows/demo/withmedia.csv"
+
+
+def test_bundle_holds_project_show_and_media(client, media_show):
+    import io
+    import zipfile
+
+    made = client.post("/api/bundle", json={"file": media_show})
+    assert made.status_code == 200, made.get_json()
+    download = client.get(made.get_json()["download"])
+    assert download.status_code == 200
+    assert "withmedia.zip" in download.headers["Content-Disposition"]
+    with zipfile.ZipFile(io.BytesIO(download.data)) as bundle:
+        names = set(bundle.namelist())
+        assert {
+            "withmedia/withmedia.rpp",
+            "withmedia/shows/demo/withmedia.csv",
+            "withmedia/shows/demo/withmedia.notes.lock",
+            "withmedia/shows/demo/media/song.mp3",
+        } <= names
+        assert any(name.endswith(".mid") and name.count("/") == 1 for name in names)
+        assert "withmedia/song.mp3" not in names  # the media is stored once, where the show file says
+        project = bundle.read("withmedia/withmedia.rpp").decode()
+        assert "shows/demo/media/song.mp3" in project
+        assert bundle.getinfo("withmedia/shows/demo/media/song.mp3").compress_type == zipfile.ZIP_STORED
+
+
+def test_bundle_missing_media(client, media_show, root):
+    (root / "shows" / "demo" / "media" / "song.mp3").unlink()
+    response = client.post("/api/bundle", json={"file": media_show})
+    assert response.status_code == 400
+    assert "not found" in response.get_json()["error"]
+    assert not list((root / "build" / "bundles").glob("*.part"))
+
+
+def test_bundle_refuses_media_outside_root(client, media_show, root, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("elsewhere") / "song.mp3"
+    outside.write_bytes(b"x")
+    (root / media_show).write_text(
+        "name,type,timestamp,duration,note,file\n"
+        f"Song,audio,,1:00,,{outside.as_posix()}\n",
+        encoding="utf-8",
+    )
+    response = client.post("/api/bundle", json={"file": media_show})
+    assert response.status_code == 400
+    assert "outside the show folders" in response.get_json()["error"]
+
+
+def test_bundle_download_only_serves_bundles(client):
+    assert client.get("/api/bundle/..%2F..%2Fexample.yaml").status_code == 404
+
+
+# --- upload
+
+def send(client, show, *files, replace=False):
+    import io
+
+    data = {"show": show, "file": [(io.BytesIO(content), name) for name, content in files]}
+    if replace:
+        data["replace"] = "1"
+    return client.post("/api/upload", data=data, content_type="multipart/form-data")
+
+
+def test_upload_media_into_show_folder(client, root):
+    response = send(client, "shows/demo/demo.csv", ("new song.mp3", b"one"), ("lights.csv", b"a,b\n"))
+    assert response.status_code == 200
+    assert response.get_json()["saved"] == ["shows/demo/media/new song.mp3", "shows/demo/lights.csv"]
+    assert (root / "shows/demo/media/new song.mp3").read_bytes() == b"one"
+    assert "shows/demo/media/new song.mp3" in client.get("/api/media").get_json()["files"]
+
+
+def test_upload_does_not_replace_without_asking(client, root):
+    send(client, "shows/demo/demo.csv", ("song.mp3", b"one"))
+    again = send(client, "shows/demo/demo.csv", ("song.mp3", b"two"))
+    assert again.status_code == 409
+    assert again.get_json()["exists"] == ["shows/demo/media/song.mp3"]
+    assert (root / "shows/demo/media/song.mp3").read_bytes() == b"one"
+    assert send(client, "shows/demo/demo.csv", ("song.mp3", b"two"), replace=True).status_code == 200
+    assert (root / "shows/demo/media/song.mp3").read_bytes() == b"two"
+
+
+def test_upload_strips_folders_from_names(client, root):
+    response = send(client, "shows/demo/demo.csv", ("../../evil.mp3", b"x"))
+    assert response.get_json()["saved"] == ["shows/demo/media/evil.mp3"]
+    assert not (root.parent / "evil.mp3").exists()
+
+
+def test_upload_for_a_show_in_the_root(client, root):
+    response = send(client, "example.yaml", ("a.wav", b"x"))
+    assert response.get_json()["saved"] == ["shows/media/a.wav"]
+
+
+@pytest.mark.parametrize("show, name, status", [
+    ("shows/demo/demo.csv", "tool.exe", 400),
+    ("shows/demo/demo.csv", ".mp3", 400),
+    ("nope.csv", "a.mp3", 404),
+])
+def test_upload_refused(client, show, name, status):
+    assert send(client, show, (name, b"x")).status_code == status
+
+
+# --- MadMapper
+
+@pytest.fixture
+def mad_show(root):
+    (root / "shows" / "demo" / "mad.csv").write_text(
+        "name,type,timestamp,duration,note,file\n"
+        "Song,audio,,1:00,,\n"
+        "Intro,projection,0:00,,5,\n"
+        "Outro,projection,0:50,,6,\n"
+        "Missing,projection,0:55,,7,\n",
+        encoding="utf-8",
+    )
+    return "shows/demo/mad.csv"
+
+
+def mad_bytes(project):
+    return project.to_bytes()
+
+
+def patch(client, show, name, content, **form):
+    import io
+
+    data = {"show": show, "project": (io.BytesIO(content), name), **form}
+    return client.post("/api/madmapper", data=data, content_type="multipart/form-data")
+
+
+def test_madmapper_patches_a_mad_file(client, mad_show):
+    from show_orchestrator.madfile import MadProject
+    from tests.test_madmapper import bank, project, triggers
+
+    response = patch(client, mad_show, "Show.mad", mad_bytes(project([bank("Show", "Intro", "Outro", "Other")])),
+                     fades="Outro=0.5")
+    assert response.status_code == 200, response.get_json()
+    result = response.get_json()
+    assert [(row["cue"], row["note"], row["note_name"]) for row in result["patched"]] == [
+        ("Intro", 5, "F-2"), ("Outro", 6, "F#-2")]
+    assert [row["effect"] for row in result["unmatched_effects"]] == ["Missing"]
+    assert [row["cue"] for row in result["unmatched_cues"]] == ["Other"]
+    assert result["hand_fades"] == [{"cue": "Outro", "bank": "Show", "old": None, "fade": 0.5}]
+    assert result["file"] == "Show_midi.mad"  # MadMapper 5: a new project next to the original
+
+    download = client.get(result["download"])
+    assert download.status_code == 200
+    patched = MadProject.from_bytes(download.data)
+    assert dict(triggers(patched))["/cues/Show/cues/by_name/Intro"] == "/midiin/all/1/F-2"
+
+
+def test_madmapper_preview_saves_nothing(client, mad_show, root):
+    from tests.test_madmapper import bank, project
+
+    response = patch(client, mad_show, "Show.mad", mad_bytes(project([bank("Show", "Intro")])), dry_run="1")
+    assert response.status_code == 200
+    assert response.get_json()["download"] is None
+    assert not (root / "build" / "madmapper").exists()
+
+
+def test_madmapper_6_mad_comes_back_under_its_own_name(client, mad_show):
+    from tests.test_madmapper import shared_timeline_project
+
+    response = patch(client, mad_show, "Musical.mad", mad_bytes(shared_timeline_project("Intro")), types="projection")
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["file"] == "Musical.mad"  # to put back into (a copy of) Musical.madproject
+
+
+def test_madmapper_patches_a_zipped_madproject(client, mad_show):
+    import io
+    import zipfile
+
+    from show_orchestrator.madfile import MadProject, T_STRING, get, set_value, to_plain
+    from tests.test_madmapper import shared_timeline_project
+
+    mad = shared_timeline_project("Intro", "Outro")
+    set_value(mad.root, "projectPath", (T_STRING, "/Users/show/Musical.madproject", 0))
+    sent = io.BytesIO()
+    with zipfile.ZipFile(sent, "w") as archive:
+        archive.writestr("Musical.madproject/Musical.mad", mad.to_bytes())
+        archive.writestr("Musical.madproject/Media/clip.mp4", b"video")
+        archive.writestr("Musical.madproject/Backup/Musical.backup.mad", b"old")
+        archive.writestr("__MACOSX/Musical.madproject/._Musical.mad", b"fork")
+    response = patch(client, mad_show, "Musical.madproject.zip", sent.getvalue())
+    assert response.status_code == 200, response.get_json()
+    result = response.get_json()
+    assert result["file"] == "Musical_midi.madproject.zip"
+    assert len(result["patched"]) == 2
+
+    with zipfile.ZipFile(io.BytesIO(client.get(result["download"]).data)) as archive:
+        names = {n for n in archive.namelist() if not n.endswith("/")}
+        assert names == {"Musical_midi.madproject/Musical_midi.mad", "Musical_midi.madproject/Media/clip.mp4"}
+        patched = MadProject.from_bytes(archive.read("Musical_midi.madproject/Musical_midi.mad"))
+    # where madmapper_patch.py would have put it: next to the original
+    assert to_plain(get(patched.root, "projectPath")) == "/Users/show/Musical_midi.madproject"
+
+
+def test_madmapper_refuses_a_zip_that_escapes(client, mad_show):
+    import io
+    import zipfile
+
+    sent = io.BytesIO()
+    with zipfile.ZipFile(sent, "w") as archive:
+        archive.writestr("../evil.mad", b"x")
+    response = patch(client, mad_show, "evil.zip", sent.getvalue())
+    assert response.status_code == 400
+    assert "outside its folder" in response.get_json()["error"]
+
+
+@pytest.mark.parametrize("name, content, form, message", [
+    ("Show.txt", b"x", {}, ".mad file"),
+    ("Show.mad", b"not a project", {}, "not a MadMapper project"),
+    ("Show.zip", b"not a zip", {}, "not a zip"),
+    ("Show.mad", None, {"fades": "Intro"}, "CUE=SECONDS"),
+    ("Show.mad", None, {"fades": "Nope=1"}, "no cue of that name"),
+    ("Show.mad", None, {"silence_threshold": "loud"}, "silence threshold"),
+    ("Show.mad", None, {"types": "colour"}, "Unknown effect type"),
+])
+def test_madmapper_errors(client, mad_show, root, name, content, form, message):
+    from tests.test_madmapper import bank, project
+
+    content = content if content is not None else mad_bytes(project([bank("Show", "Intro")]))
+    response = patch(client, mad_show, name, content, **form)
+    assert response.status_code == 400
+    assert message in response.get_json()["error"]
+    assert not list((root / "build").rglob("*.mad"))
+
+
+def test_show_reports_its_madmapper_settings(client, root):
+    (root / "shows" / "demo" / "set.yaml").write_text(
+        "madmapper:\n"
+        "  fades_from_audio: true\n"
+        "  fades:\n"
+        "    Intro: 0.2\n"
+        "effects:\n"
+        "  projection:\n"
+        "    - {id: Intro, name: Intro}\n"
+        "audio_tracks:\n"
+        "  - name: Song\n"
+        "    duration: '1:00'\n"
+        "    events:\n"
+        "      projection:\n"
+        "        - {effect_id: Intro, timestamp: '0:00'}\n",
+        encoding="utf-8",
+    )
+    show = client.get("/api/show?file=shows/demo/set.yaml").get_json()
+    assert show["madmapper"]["fades_from_audio"] is True
+    assert show["madmapper"]["fades"] == {"Intro": 0.2}
+    assert show["effect_types"] == ["projection"]
+    assert client.get("/api/show?file=shows/demo/demo.csv").get_json()["madmapper"] == {}
