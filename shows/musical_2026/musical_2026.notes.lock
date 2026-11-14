@@ -26,6 +26,14 @@
         "note": 4,
         "channel": 0
       },
+      "5. Duerme - Mamparas": {
+        "note": 9,
+        "channel": 0
+      },
+      "5. Duerme - Mamparas Off": {
+        "note": 10,
+        "channel": 0
+      },
       "6. Me sostendras": {
         "note": 5,
         "channel": 0
