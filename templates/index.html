@@ -226,6 +226,7 @@
           <button id="build" class="primary grow">Build</button>
           <button id="bundle" class="grow" title="A zip with the REAPER project, the MIDI files, the show file and all its media, the lighting and the patched MadMapper project, ready to open on another machine">Download bundle</button>
         </div>
+        <label title="The videos in the show's MadMapper project: often most of the bundle's size">Bundle with MadMapper videos <input id="include-videos" type="checkbox"></label>
         <p class="muted">Bundle: extract the whole zip, then open the <code>.rpp</code> inside it. Opened from inside the zip, REAPER finds none of its media.</p>
       </div>
       <p id="status" class="status"></p>
@@ -462,7 +463,7 @@ async function downloadBundle() {
   setStatus("Preparing the bundle… (copying every media file can take a while)");
   $("bundle").disabled = true;
   try {
-    const result = await api("/api/bundle", buildOptions());
+    const result = await api("/api/bundle", {...buildOptions(), include_videos: $("include-videos").checked});
     const warnings = (result.warnings || []).map((text) => `\n⚠ ${text}`).join("");
     setStatus(`Downloading ${(result.size / 1e6).toFixed(1)} MB…${warnings}`, warnings ? "error" : "ok");
     // a download link rather than navigating, so the page (and any unsaved edit) stays
@@ -474,12 +475,67 @@ async function downloadBundle() {
   }
 }
 
-function sendFiles(files, replace) {
+// Files larger than this go to the server in pieces first (/api/chunks): a proxy in front of it may refuse a large
+// request (Cloudflare: 100 MB). The form then names each one as <field>_chunk.
+const PIECES_OVER = 48 * 1024 * 1024;
+const PIECE_SIZE = 32 * 1024 * 1024;
+
+function putPiece(id, offset, piece, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", `/api/chunks/${id}?offset=${offset}`);
+    request.upload.onprogress = (event) => event.lengthComputable && onProgress(event.loaded);
+    request.onload = () => {
+      if (request.status === 401) location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+      let data;
+      try { data = JSON.parse(request.responseText); } catch { data = {error: `Server error (${request.status})`}; }
+      request.status < 400 ? resolve(data) : reject(new Error(data.error || `Server error (${request.status})`));
+    };
+    request.onerror = () => reject(new Error("The upload was cut off"));
+    request.send(piece);
+  });
+}
+
+async function sendInPieces(file, onProgress) {
+  const {id} = await api("/api/chunks", {name: file.name, size: file.size});
+  for (let offset = 0; offset < file.size; offset += PIECE_SIZE) {
+    const piece = file.slice(offset, offset + PIECE_SIZE);
+    for (let attempt = 1; ; attempt++) {  // a piece that fails is sent again, twice at most
+      try {
+        await putPiece(id, offset, piece, (loaded) => onProgress(offset + loaded));
+        break;
+      } catch (err) {
+        if (attempt >= 3) throw err;
+      }
+    }
+  }
+  return id;
+}
+
+// A FormData of `entries` ([field, value or File]), the large files sent in pieces first.
+async function formWithPieces(entries, statusId) {
+  const large = entries.filter(([, value]) => value instanceof File && value.size > PIECES_OVER);
+  const total = large.reduce((sum, [, file]) => sum + file.size, 0);
+  let done = 0;
   const form = new FormData();
-  form.append("show", $("show-select").value);
-  if (replace) form.append("replace", "1");
-  for (const file of files) form.append("file", file);
-  return postForm("/api/upload", form, "upload-status");
+  for (const [field, value] of entries) {
+    if (large.some(([, file]) => file === value)) {
+      const id = await sendInPieces(value, (sent) => setStatus(
+        `Uploading ${value.name} in pieces… ${Math.round(100 * (done + sent) / total)}%`, "muted", statusId));
+      done += value.size;
+      form.append(`${field}_chunk`, id);
+    } else {
+      form.append(field, value);
+    }
+  }
+  return form;
+}
+
+async function sendFiles(files) {
+  const form = await formWithPieces([["show", $("show-select").value], ...files.map((file) => ["file", file])],
+    "upload-status");
+  const send = () => postForm("/api/upload", form, "upload-status");
+  return {form, send};
 }
 
 // POST a form with files, showing the upload's progress in `statusId`; resolves to {status, data}.
@@ -511,8 +567,12 @@ async function uploadFiles() {
   const files = [...$("upload").files];
   if (!files.length) return;
   try {
-    let {status, data} = await sendFiles(files, false);
-    if (status === 409 && confirm(`${data.error}\n\nReplace them?`)) ({status, data} = await sendFiles(files, true));
+    const {form, send} = await sendFiles(files);
+    let {status, data} = await send();
+    if (status === 409 && confirm(`${data.error}\n\nReplace them?`)) {
+      form.set("replace", "1");  // the pieces already sent are used again
+      ({status, data} = await send());
+    }
     if (status >= 400) throw new Error(data.error || `Server error (${status})`);
     setStatus(`Added:\n${data.saved.join("\n")}`, "ok", "upload-status");
     loadMedia();
@@ -624,10 +684,8 @@ async function uploadMadProject() {
     $("mad-project").value = "";
     return;
   }
-  const form = new FormData();
-  form.append("show", $("show-select").value);
-  form.append("project", file);
   try {
+    const form = await formWithPieces([["show", $("show-select").value], ["project", file]], "mad-upload-status");
     const {status, data} = await postForm("/api/madmapper/project", form, "mad-upload-status");
     if (status >= 400) throw new Error(data.error || `Server error (${status})`);
     renderMadProject(data);

@@ -5,7 +5,10 @@ import json
 import math
 import os
 import re
+import shutil
 import tempfile
+import time
+import uuid
 from datetime import timedelta
 from pathlib import Path
 
@@ -31,6 +34,9 @@ NOT_SHOWS = {"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compo
 MEDIA_SUFFIXES = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aif", ".aiff", ".mid", ".midi"}
 DEFAULT_OUTPUT_DIR = "build"
 BUNDLE_DIR = "build/bundles"  # the latest bundle of each show, for downloading
+CHUNK_DIR = "build/chunks"  # files arriving in pieces (/api/chunks), until the upload they are for uses them
+MAX_CHUNK_BYTES = 64 * 1024**2  # one piece; a proxy may refuse more (Cloudflare: 100 MB a request)
+CHUNK_HOURS = 24  # pieces of an upload nobody finished are thrown away after this
 MADMAPPER_DIR = "build/madmapper"  # the latest patched copy of each MadMapper project, for downloading
 MAX_UPLOAD_BYTES = 2 * 1024**3
 # What a program's token (SHOW_ORCHESTRATOR_TOKENS) may use: a show's lighting and its media, nothing else.
@@ -225,6 +231,24 @@ def upload_folder(show: str) -> Path:
     return Path("shows") if folder == Path(".") else folder
 
 
+class AssembledUpload:
+    """A file sent in pieces through /api/chunks, standing in for an uploaded file (werkzeug's FileStorage): it has
+    a `filename`, `save()` moves it into place and `read()` reads it."""
+
+    def __init__(self, path: Path, info: Path, filename: str):
+        self.path, self.info, self.filename = path, info, filename
+
+    def save(self, target) -> None:
+        shutil.move(str(self.path), str(target))
+        self.info.unlink(missing_ok=True)
+
+    def read(self) -> bytes:
+        data = self.path.read_bytes()
+        self.path.unlink(missing_ok=True)
+        self.info.unlink(missing_ok=True)
+        return data
+
+
 def save_show_text(file: Path, text: str) -> None:
     """Replace a show file with `text`, unless the result would not load."""
     validate_source(text, file)
@@ -401,6 +425,83 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
     def media():
         return jsonify(files=find_media_files(root))
 
+    # --- files too large for one request go in pieces: POST /api/chunks, PUT each piece, then name the chunk in the
+    # upload it is for (<field>_chunk=<id> in place of the file)
+
+    def chunk_files(chunk_id: str) -> tuple[Path, Path] | None:
+        if not re.fullmatch(r"[0-9a-f]{32}", chunk_id or ""):
+            return None
+        folder = root / CHUNK_DIR
+        return folder / f"{chunk_id}.part", folder / f"{chunk_id}.json"
+
+    def chunk_info(chunk_id: str) -> tuple[Path, Path, dict] | None:
+        """A chunked upload of whoever asks: (data, info file, info), or None."""
+        files = chunk_files(chunk_id)
+        if files is None or not files[0].is_file():
+            return None
+        try:
+            info = json.loads(files[1].read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return (*files, info) if info.get("by") == who() else None
+
+    @app.post("/api/chunks")
+    def start_chunks():
+        """Start an upload in pieces: {name, size} -> {id, piece} (the largest piece to PUT)."""
+        data = request.get_json(silent=True) or {}
+        name = upload_name(data.get("name"))
+        size = data.get("size")
+        if not name or not isinstance(size, int) or not 0 < size <= MAX_UPLOAD_BYTES:
+            return error(f"Send the file's name and size (at most {MAX_UPLOAD_BYTES // 1024**3} GB)")
+        folder = root / CHUNK_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        for old in folder.iterdir():  # what nobody finished
+            if old.stat().st_mtime < time.time() - CHUNK_HOURS * 3600:
+                old.unlink(missing_ok=True)
+        chunk_id = uuid.uuid4().hex
+        part, info = chunk_files(chunk_id)
+        part.write_bytes(b"")
+        info.write_text(json.dumps({"name": name, "size": size, "by": who()}), encoding="utf-8")
+        return jsonify(id=chunk_id, piece=MAX_CHUNK_BYTES)
+
+    @app.put("/api/chunks/<chunk_id>")
+    def put_chunk(chunk_id: str):
+        """One piece of a chunked upload, at ?offset= (the bytes received so far; a piece sent again is fine)."""
+        found = chunk_info(chunk_id)
+        if found is None:
+            return error("No such upload", 404)
+        part, _, info = found
+        if (request.content_length or 0) > MAX_CHUNK_BYTES:
+            return error(f"A piece can be at most {MAX_CHUNK_BYTES // 1024**2} MB", 413)
+        try:
+            offset = int(request.args.get("offset", ""))
+        except ValueError:
+            return error("offset= must be a number")
+        have = part.stat().st_size
+        piece = request.get_data(cache=False)
+        if offset < 0 or offset > have:
+            return jsonify(error=f"Expected the piece at {have}", received=have), 409
+        if offset + len(piece) > info["size"]:
+            return error("The pieces add up to more than the file's size")
+        with open(part, "r+b") as out:
+            out.seek(offset)
+            out.write(piece)
+        return jsonify(received=max(have, offset + len(piece)), size=info["size"])
+
+    def received(field: str) -> list:
+        """The files sent in a form field: uploaded with the form, or (<field>_chunk=<id>) in pieces before it.
+        ValueError when a chunked one is unknown or not complete."""
+        files = [upload for upload in request.files.getlist(field) if upload.filename]
+        for chunk_id in request.form.getlist(f"{field}_chunk"):
+            found = chunk_info(chunk_id)
+            if found is None:
+                raise ValueError("An upload sent in pieces is gone: send it again")
+            part, info_file, info = found
+            if part.stat().st_size != info["size"]:
+                raise ValueError(f"{info['name']} has not arrived completely: send it again")
+            files.append(AssembledUpload(part, info_file, info["name"]))
+        return files
+
     @app.post("/api/upload")
     def upload():
         """Add files to a show: media into its media/ folder, show files (e.g. a lights timeline to include)
@@ -408,7 +509,10 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
         show = request.form.get("show")
         if show_file(show) is None:
             return error("Unknown show file", 404)
-        uploads = request.files.getlist("file")
+        try:
+            uploads = received("file")
+        except ValueError as exc:
+            return error(str(exc))
         if not uploads:
             return error("No files sent")
         targets = []
@@ -449,12 +553,15 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
             return error(str(exc))
         folder = root / BUNDLE_DIR
         folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"{file.stem}.zip"
-        partial = folder / f"{file.stem}.zip.part"
+        include_videos = bool(data.get("include_videos"))
+        stem = f"{file.stem}_with_videos" if include_videos else file.stem
+        target = folder / f"{stem}.zip"
+        partial = folder / f"{stem}.zip.{uuid.uuid4().hex[:8]}.part"  # two bundles made at once don't mix
         try:
             with open(partial, "wb") as out:
                 warnings = write_bundle(root, file.relative_to(root), out, velocity=velocity, gap=gap,
-                                        routing=data.get("routing"), note_lock=data.get("note_lock", True))
+                                        routing=data.get("routing"), note_lock=data.get("note_lock", True),
+                                        include_videos=include_videos)
             partial.replace(target)
         except SHOW_ERRORS as exc:
             partial.unlink(missing_ok=True)
@@ -486,18 +593,21 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
         file = show_file(request.form.get("show"))
         if file is None:
             return error("Unknown show file", 404)
-        upload = request.files.get("project")
-        if upload is None or not upload.filename:
+        try:
+            upload = next(iter(received("project")), None)
+        except ValueError as exc:
+            return error(str(exc))
+        if upload is None:
             return error("No MadMapper project sent")
         name = upload_name(upload.filename)
         with tempfile.TemporaryDirectory() as tmp:
-            received = Path(tmp) / "upload"
-            upload.save(received)
+            saved = Path(tmp) / "upload"
+            upload.save(saved)
             try:
-                check_project(received, name)
+                check_project(saved, name)
             except SHOW_ERRORS as exc:
                 return error(f"Not kept: {exc}")
-            showfiles.store_project(root, file.relative_to(root), received, name, who())
+            showfiles.store_project(root, file.relative_to(root), saved, name, who())
         return jsonify(project_info(file))
 
     @app.get("/api/madmapper/project/download")
@@ -522,9 +632,10 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
         file = show_file(request.form.get("show"))
         if file is None:
             return error("Unknown show file", 404)
-        upload = request.files.get("project")
-        if upload is not None and not upload.filename:
-            upload = None
+        try:
+            upload = next(iter(received("project")), None)
+        except ValueError as exc:
+            return error(str(exc))
         stored = showfiles.stored_project(root, file.relative_to(root))
         if upload is None and stored is None:
             return error("This show has no MadMapper project yet: upload one first")

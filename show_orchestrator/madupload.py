@@ -23,6 +23,8 @@ from show_orchestrator.models import Show
 
 MAX_UNZIPPED_BYTES = 8 * 1024**3
 SKIPPED = ("__MACOSX/",)  # the Finder's resource forks
+COMPRESSED_MEDIA = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".mpg", ".mpeg", ".mp3", ".m4a", ".aac", ".jpg",
+                    ".jpeg", ".png", ".gif", ".zip"}
 
 
 def parse_fades(text: str) -> list[tuple[str, float]]:
@@ -143,6 +145,8 @@ def patch_upload(
         partial = output.with_name(output.name + ".part")
         with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(patched.rglob("*")):
-                archive.write(path, path.relative_to(patched.parent).as_posix())
+                # media is compressed already: stored as it is, which is as small and much faster
+                method = zipfile.ZIP_STORED if path.suffix.lower() in COMPRESSED_MEDIA else zipfile.ZIP_DEFLATED
+                archive.write(path, path.relative_to(patched.parent).as_posix(), method)
         partial.replace(output)
         return result, output

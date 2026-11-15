@@ -15,6 +15,7 @@ project.
 """
 from __future__ import annotations
 
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -22,7 +23,7 @@ from typing import BinaryIO
 
 from show_orchestrator.backends.reaper import ReaperBackend, reaper_settings
 from show_orchestrator.generator import DEFAULT_VELOCITY, MidiGenerator
-from show_orchestrator.madupload import patch_upload
+from show_orchestrator.madupload import SKIPPED, patch_upload
 from show_orchestrator.models import Show
 from show_orchestrator.notes import lock_path_for
 from show_orchestrator.parser import Parser
@@ -30,6 +31,8 @@ from show_orchestrator.showfiles import lighting_files, stored_project
 
 # Already compressed: stored as they are, which is as small and much faster.
 STORED_SUFFIXES = {".mp3", ".m4a", ".aac", ".ogg", ".flac", ".mp4", ".mpeg", ".mpg", ".mov", ".webm", ".zip"}
+# A MadMapper project's videos: in a bundle only when asked for, as they can be most of its size.
+VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg", ".mxf", ".hap"}
 
 README = """{name}
 {underline}
@@ -40,7 +43,7 @@ the zip, REAPER gets the project alone and reports every audio and MIDI file as 
 {name}.rpp                 the REAPER project; its media is referenced at shows/... below
 *.mid                      the cues it plays (and the pieces of split MIDI files)
 shows/                     the show definition, its note lock and its media{lighting}{madmapper}
-
+{videos}
 The folder is also a show-orchestrator root: `python main.py {show_file}` run inside it builds the project again.
 """
 
@@ -84,9 +87,11 @@ def write_bundle(
     gap: float | None = None,
     routing: str | None = None,
     note_lock: bool = True,
+    include_videos: bool = False,
 ) -> list[str]:
     """Build `show_file` (relative to root) and write the zip to `out`. `gap` and `routing` as for a build: None
     takes the show's own settings. Media paths are read relative to root, so root must be the working directory.
+    The MadMapper project goes in without the videos it holds unless `include_videos`.
     Returns warnings: things the bundle has but not as they should be (a MadMapper project that would not patch)."""
     show_file = Path(show_file)
     name = show_file.stem
@@ -124,18 +129,50 @@ def write_bundle(
                 stored = path.suffix.lower() in STORED_SUFFIXES
                 bundle.write(path, f"{name}/{arcname}", zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED)
 
-            readme = README.format(
-                name=name, underline="=" * len(name), show_file=PurePosixPath(show_file.as_posix()),
-                lighting="\n  .../lighting/            the QLC+ workspace and fixtures (from ReQLC)" if lighting else "",
-                madmapper="\nmadmapper/                 the MadMapper project, patched to the show's notes" if madmapper else "")
-            # CRLF: Notepad on an older Windows shows LF-only text as one line
-            bundle.writestr(f"{name}/READ ME FIRST.txt", readme.replace("\n", "\r\n"))
+            def add_project_folder(path: Path) -> list[str]:
+                """A zipped .madproject's files under madmapper/ (a folder, ready to open, not a zip in the zip);
+                returns the videos left out."""
+                left_out = []
+                with zipfile.ZipFile(path) as source:
+                    for member in source.infolist():
+                        member_path = PurePosixPath(member.filename.replace("\\", "/"))
+                        if (member.is_dir() or member.filename.startswith(SKIPPED) or member_path.name == ".DS_Store"
+                                or member_path.is_absolute() or ".." in member_path.parts):
+                            continue
+                        if not include_videos and member_path.suffix.lower() in VIDEO_SUFFIXES:
+                            left_out.append(member_path.name)
+                            continue
+                        info = zipfile.ZipInfo(f"{name}/madmapper/{member_path}", date_time=member.date_time)
+                        info.external_attr = 0o644 << 16
+                        info.compress_type = (zipfile.ZIP_STORED if member_path.suffix.lower() in STORED_SUFFIXES
+                                              else zipfile.ZIP_DEFLATED)
+                        with source.open(member) as data, bundle.open(info, "w", force_zip64=True) as copy:
+                            shutil.copyfileobj(data, copy, 1024 * 1024)
+                return left_out
+
+            # the rest first, so the README can say which videos were left out
             for path in sorted(build.rglob("*")):
                 relative = path.relative_to(build)
                 if path.is_file() and relative.parts[0] != ".madmapper":
                     add(path, relative.as_posix())
             for relative in [*files, *lighting]:
                 add(root / relative, str(relative))
+            left_out = []
             for path, arcname in madmapper:
-                add(path, f"madmapper/{arcname}")
+                if path.suffix.lower() == ".zip":
+                    left_out += add_project_folder(path)
+                else:
+                    add(path, f"madmapper/{arcname}")
+
+            videos = ""
+            if left_out:
+                videos = (f"\nThe MadMapper project is here without its {len(left_out)} videos (Include videos was off):\n"
+                          + "".join(f"  {video}\n" for video in sorted(set(left_out)))
+                          + "Copy them into its Media folder, or make the bundle again with Include videos.\n")
+            readme = README.format(
+                name=name, underline="=" * len(name), show_file=PurePosixPath(show_file.as_posix()), videos=videos,
+                lighting="\n  .../lighting/            the QLC+ workspace and fixtures (from ReQLC)" if lighting else "",
+                madmapper="\nmadmapper/                 the MadMapper project, patched to the show's notes" if madmapper else "")
+            # CRLF: Notepad on an older Windows shows LF-only text as one line
+            bundle.writestr(f"{name}/READ ME FIRST.txt", readme.replace("\n", "\r\n"))
     return warnings

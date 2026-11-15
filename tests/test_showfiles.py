@@ -295,3 +295,105 @@ def test_a_bundle_with_a_project_that_will_not_patch_says_so(program, root, lit_
     assert "could not be patched" in made["warnings"][0]
     with zipfile.ZipFile(io.BytesIO(program.get(made["download"]).data)) as bundle:
         assert "lit/madmapper/Show.mad" in bundle.namelist()  # as uploaded
+
+
+def madproject_zip(*cues, video=b"video"):
+    """A MadMapper 6 project folder, zipped as the Finder does, with a video in its Media folder."""
+    from tests.test_madmapper import shared_timeline_project
+
+    sent = io.BytesIO()
+    with zipfile.ZipFile(sent, "w") as archive:
+        archive.writestr("Musical.madproject/Musical.mad", shared_timeline_project(*cues).to_bytes())
+        archive.writestr("Musical.madproject/Media/clip.mp4", video)
+        archive.writestr("Musical.madproject/Media/Materials/look.png", b"png")
+        archive.writestr("__MACOSX/Musical.madproject/._Musical.mad", b"fork")
+    return sent.getvalue()
+
+
+@pytest.mark.parametrize("include_videos", [False, True])
+def test_the_bundle_has_the_madmapper_videos_only_when_asked(program, root, lit_show, include_videos):
+    program.post("/login", data={"user": "fer", "password": "pw"})
+    (root / "shows/lit/luces_midi/MS 2 Outro.mid").write_bytes(midi_bytes(2))
+    assert keep(program, lit_show, "Musical.madproject.zip", madproject_zip("Stars")).status_code == 200
+    made = program.post("/api/bundle", json={"file": lit_show, "include_videos": include_videos}).get_json()
+    assert made["download"].endswith("lit_with_videos.zip" if include_videos else "lit.zip")
+    with zipfile.ZipFile(io.BytesIO(program.get(made["download"]).data)) as bundle:
+        names = set(bundle.namelist())
+        readme = bundle.read("lit/READ ME FIRST.txt").decode()
+    folder = "lit/madmapper/Musical_midi.madproject/"
+    # the project as a folder, ready to open, rather than a zip in the zip
+    assert {folder + "Musical_midi.mad", folder + "Media/Materials/look.png"} <= names
+    assert not any("__MACOSX" in name for name in names)
+    assert (folder + "Media/clip.mp4" in names) == include_videos
+    assert ("without its 1 videos" in readme and "clip.mp4" in readme) != include_videos
+
+
+# --- uploads in pieces (for files larger than a proxy lets through in one request)
+
+def send_in_pieces(client, name, data, piece=4):  # noqa: F811
+    started = client.post("/api/chunks", json={"name": name, "size": len(data)})
+    assert started.status_code == 200, started.get_json()
+    chunk = started.get_json()["id"]
+    for offset in range(0, len(data), piece):
+        sent = client.put(f"/api/chunks/{chunk}?offset={offset}", data=data[offset:offset + piece])
+        assert sent.status_code == 200, sent.get_json()
+    return chunk
+
+
+def test_a_large_file_arrives_in_pieces(client, root):  # noqa: F811
+    chunk = send_in_pieces(client, "big song.mp3", b"0123456789abcdef!")
+    response = client.post("/api/upload", data={"show": "shows/demo/demo.csv", "file_chunk": chunk},
+                           content_type="multipart/form-data")
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()["saved"] == ["shows/demo/media/big song.mp3"]
+    assert (root / "shows/demo/media/big song.mp3").read_bytes() == b"0123456789abcdef!"
+    assert not list((root / "build" / "chunks").iterdir())  # used up
+
+
+def test_a_piece_sent_again_or_out_of_order(client):  # noqa: F811
+    chunk = client.post("/api/chunks", json={"name": "a.mp3", "size": 8}).get_json()["id"]
+    assert client.put(f"/api/chunks/{chunk}?offset=0", data=b"abcd").get_json()["received"] == 4
+    assert client.put(f"/api/chunks/{chunk}?offset=0", data=b"abcd").get_json()["received"] == 4  # a retry
+    skipped = client.put(f"/api/chunks/{chunk}?offset=6", data=b"gh")
+    assert skipped.status_code == 409 and skipped.get_json()["received"] == 4
+    assert client.put(f"/api/chunks/{chunk}?offset=4", data=b"efghi").status_code == 400  # more than its size
+    # not complete yet: refused by the upload it is for
+    response = client.post("/api/upload", data={"show": "shows/demo/demo.csv", "file_chunk": chunk},
+                           content_type="multipart/form-data")
+    assert response.status_code == 400 and "not arrived completely" in response.get_json()["error"]
+
+
+def test_a_piece_too_large_is_refused(client, monkeypatch):  # noqa: F811
+    import web
+
+    monkeypatch.setattr(web, "MAX_CHUNK_BYTES", 4)
+    chunk = client.post("/api/chunks", json={"name": "a.mp3", "size": 8}).get_json()["id"]
+    assert client.put(f"/api/chunks/{chunk}?offset=0", data=b"abcdefgh").status_code == 413
+
+
+@pytest.mark.parametrize("body", [{}, {"name": "a.mp3"}, {"name": "a.mp3", "size": 0}, {"name": "", "size": 3},
+                                  {"name": "a.mp3", "size": 3 * 1024**3}])
+def test_a_chunked_upload_needs_a_name_and_size(client, body):  # noqa: F811
+    assert client.post("/api/chunks", json=body).status_code == 400
+
+
+def test_pieces_belong_to_whoever_sent_them(root):  # noqa: F811
+    app = create_app(root, users={"fer": "pw", "ana": "pw2"})
+    fer, ana = app.test_client(), app.test_client()
+    fer.post("/login", data={"user": "fer", "password": "pw"})
+    ana.post("/login", data={"user": "ana", "password": "pw2"})
+    chunk = send_in_pieces(fer, "a.mp3", b"abcd")
+    assert ana.put(f"/api/chunks/{chunk}?offset=0", data=b"abcd").status_code == 404
+    response = ana.post("/api/upload", data={"show": "shows/demo/demo.csv", "file_chunk": chunk},
+                        content_type="multipart/form-data")
+    assert response.status_code == 400
+    assert fer.put("/api/chunks/../../example.yaml?offset=0", data=b"x").status_code == 404
+
+
+def test_a_madmapper_project_arrives_in_pieces(client, mad_show):  # noqa: F811
+    chunk = send_in_pieces(client, "Musical.madproject.zip", madproject_zip("Intro"), piece=1000)
+    kept = client.post("/api/madmapper/project", data={"show": mad_show, "project_chunk": chunk},
+                       content_type="multipart/form-data")
+    assert kept.status_code == 200, kept.get_json()
+    assert kept.get_json()["project"]["name"] == "Musical.madproject.zip"
+    assert patch(client, mad_show).get_json()["file"] == "Musical_midi.madproject.zip"

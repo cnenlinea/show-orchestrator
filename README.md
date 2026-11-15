@@ -114,11 +114,16 @@ musical_2026/
   shows/musical_2026/media/...              and every media file, at the paths the show gives
   shows/musical_2026/lighting/...           the QLC+ workspace and fixtures ReQLC published (see Lighting below)
   madmapper/<project>_midi.mad              the show's MadMapper project, patched to the show's notes
+                                            (a .madproject as a folder, ready to open)
 ```
+
+**Bundle with MadMapper videos** decides whether the videos inside the MadMapper project (its `Media/` folder) go in too. They are often most of a show's size, so they're left out unless ticked, and `READ ME FIRST.txt` lists what was left out. A bundle with them is kept as `<show>_with_videos.zip` (API: `"include_videos": true`).
 
 The project references the media at those paths, relative to its own folder, so each file is stored once. **Extract the whole zip first**, then open the `.rpp` from the extracted folder: opened straight from inside the zip, REAPER gets the project alone and reports every file as missing. The MadMapper project is patched as the bundle is made, with the show's `madmapper:` settings; if it won't patch (say, a fade names a cue the project doesn't have), the bundle holds it as uploaded and says so. The folder is also a show-orchestrator root: run `python <repo>/main.py shows/musical_2026/musical_2026.yaml --orchestrate reaper` inside it to rebuild, or point `madmapper_patch.py` at the same show file. A show whose media lies outside the project root (an absolute path elsewhere) can't be bundled: move the media under `shows/` first. The latest bundle of each show is kept in `build/bundles/`.
 
-**Add files** uploads files into the selected show's folders. Audio and MIDI files go into its `media/` folder (for a show in the root, `shows/media/`), and a `.csv` or `.yaml` (such as a light-show-simulator lights timeline to `include`) goes next to the show file. A file with the same name is replaced only after you confirm. Uploads can be up to 2 GB, but a proxy in front of the server may allow less: Cloudflare's limit is 100 MB per request.
+**Add files** uploads files into the selected show's folders. Audio and MIDI files go into its `media/` folder (for a show in the root, `shows/media/`), and a `.csv` or `.yaml` (such as a light-show-simulator lights timeline to `include`) goes next to the show file. A file with the same name is replaced only after you confirm. Files can be up to 2 GB. A proxy in front of the server may refuse a large request (Cloudflare: 100 MB), so the page sends any file over 48 MB in 32 MB pieces first, here and for MadMapper projects.
+
+Uploading in pieces through the API: `POST /api/chunks` with `{"name", "size"}` gives an `id`. Then `PUT /api/chunks/<id>?offset=<bytes sent so far>` with each piece as the body (64 MB at most; a piece sent again is fine, one out of order answers 409 with `received`). Finally, name the chunk in the upload it is for, in place of the file: `file_chunk=<id>` for `/api/upload`, `project_chunk=<id>` for the MadMapper routes. Pieces belong to whoever sent them, and those of an upload nobody finished are thrown away after a day.
 
 #### Login
 
