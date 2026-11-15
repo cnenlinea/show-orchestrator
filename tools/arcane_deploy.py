@@ -9,7 +9,7 @@ shows kept in a volume that outlives every redeploy. (The same approach as Sauro
 
 Settings come from the environment, then this repository's .env, then SauronsEye's .env (keys in any case):
     arcane_server           the Arcane host, e.g. arcane.example.org
-    arcane_api              an Arcane API key
+    arcane_api              an Arcane API key (or arcane_apikey, arcane_api_key)
     orchestrator_users      "name:password,name:password"  -> SHOW_ORCHESTRATOR_USERS
     orchestrator_password   one password, user "show"       -> SHOW_ORCHESTRATOR_PASSWORD
                             (falls back to replay_password, the SauronsEye replay's)
@@ -22,6 +22,10 @@ port 8771, volumes show-orchestrator-shows (/app/shows) and show-orchestrator-bu
 container copies the image's shows into the volume only where the volume has no file of that name, so a show
 edited on the server is kept, and a show changed on this machine reaches the server only once the server's copy
 is deleted.
+
+`--show shows/<...>/<show>.yaml` (repeatable) sends only those shows from shows/, and of each only what it uses:
+the show file, its note lock, included files and media (as a bundle holds them). Without it, all of shows/ goes.
+A proxy in front of Arcane may refuse a large request (Cloudflare: 100 MB), so `sync` warns about files that big.
 """
 from __future__ import annotations
 
@@ -41,6 +45,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILES = [ROOT / ".env", Path("H:/SauronsEye/.env")]
+API_KEY_NAMES = ("arcane_api", "arcane_apikey", "arcane_api_key")
+LARGE_FILE = 95 * 1000**2  # just under Cloudflare's 100 MB request limit
 
 NAME = "show-orchestrator"                    # the image, the container and the build workspace
 PORT = "8771"
@@ -129,8 +135,23 @@ class Arcane:
                 if NAME in " ".join(b.get("tags") or [])][:n]
 
 
-def context_files() -> list[tuple[str, Path]]:
-    """[(path relative to the repo, absolute path)] of what the image build needs: .dockerignore's whitelist."""
+def show_files(shows: list[Path]) -> set[str]:
+    """What the given show files use, as paths relative to the repo (see show_orchestrator.bundle)."""
+    sys.path.insert(0, str(ROOT))
+    from show_orchestrator.bundle import show_dependencies
+    from show_orchestrator.parser import Parser
+
+    needed = set()
+    for show in shows:
+        relative = (show if show.is_absolute() else Path.cwd() / show).resolve().relative_to(ROOT)
+        needed.update(str(p) for p in show_dependencies(ROOT, relative, Parser().load_show(ROOT / relative)))
+    return needed
+
+
+def context_files(shows: list[Path] | None = None) -> list[tuple[str, Path]]:
+    """[(path relative to the repo, absolute path)] of what the image build needs: .dockerignore's whitelist,
+    with only what `shows` use from shows/ when they are given."""
+    needed = show_files(shows) if shows else None
     allow, deny = [], []
     for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -152,15 +173,20 @@ def context_files() -> list[tuple[str, Path]]:
         for p in sorted(ROOT.glob(pat.rstrip("/"))):
             for f in sorted(p.rglob("*")) if p.is_dir() else [p]:
                 rel = f.relative_to(ROOT).as_posix()
+                if needed is not None and rel.startswith("shows/") and rel not in needed:
+                    continue
                 if f.is_file() and not denied(rel) and rel not in seen:
                     seen.add(rel)
                     out.append((rel, f))
     return out
 
 
-def sync(a: Arcane) -> int:
-    files = context_files()
+def sync(a: Arcane, shows: list[Path] | None = None) -> int:
+    files = context_files(shows)
     print(f"build context: {len(files)} files, {sum(p.stat().st_size for _, p in files) / 1e6:.1f} MB -> {CONTEXT}")
+    for rel, p in files:
+        if p.stat().st_size > LARGE_FILE:
+            print(f"  warning: {rel} is {p.stat().st_size / 1e6:.0f} MB; a proxy in front of Arcane may refuse it")
     there, there_dirs = {}, set()                        # rel -> size on the host, to skip what matches
 
     def walk(sub: str):
@@ -280,23 +306,26 @@ def main(argv=None) -> int:
     ap.add_argument("--env-file", action="append", type=Path, default=None,
                     help=f"a .env to read (repeatable; default: {', '.join(str(p) for p in ENV_FILES)})")
     ap.add_argument("--open", action="store_true", help="start the container even without a login")
+    ap.add_argument("--show", dest="shows", action="append", type=Path, default=None,
+                    help="send only this show (and what it uses) from shows/; repeatable (default: all of shows/)")
     args = ap.parse_args(argv)
     conf = settings(args.env_file or ENV_FILES)
-    host, key = args.host or conf.get("arcane_server"), args.key or conf.get("arcane_api")
+    host = args.host or conf.get("arcane_server")
+    key = args.key or next((conf[k] for k in API_KEY_NAMES if conf.get(k)), None)
     if not host or not key:
         raise SystemExit("arcane_server and arcane_api must be in .env (or --host / --key)")
     arc = Arcane(host, key)
     if args.cmd == "status":
         return status(arc)
     if args.cmd == "sync":
-        return sync(arc)
+        return sync(arc, args.shows)
     if args.cmd == "build":
         return build(arc)
     if args.cmd == "up":
         return up(arc, conf, args.open)
     if not login_env(conf) and not args.open:  # before minutes of upload and build, not after
         raise SystemExit("no login: set orchestrator_users or orchestrator_password in .env (or pass --open)")
-    if sync(arc) or build(arc):
+    if sync(arc, args.shows) or build(arc):
         return 1
     return up(arc, conf, args.open)
 

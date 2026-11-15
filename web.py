@@ -24,6 +24,8 @@ from show_orchestrator.notes import assign_missing_notes, lock_path_for
 from show_orchestrator.parser import Parser
 
 SHOW_SUFFIXES = {".yaml", ".yml", ".csv"}
+# YAML files next to the app that are not shows
+NOT_SHOWS = {"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
 MEDIA_SUFFIXES = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aif", ".aiff", ".mid", ".midi"}
 DEFAULT_OUTPUT_DIR = "build"
 BUNDLE_DIR = "build/bundles"  # the latest bundle of each show, for downloading
@@ -64,11 +66,15 @@ def safe_next(target: str | None) -> str:
 
 def find_show_files(root: Path) -> list[str]:
     """Show definitions next to the app and anywhere under shows/, relative to root."""
-    candidates = [*root.glob("*"), *(root / "shows").rglob("*")]
+    candidates = [
+        *(path for path in root.glob("*") if path.name not in NOT_SHOWS),
+        *(root / "shows").rglob("*"),
+    ]
     return sorted(
         path.relative_to(root).as_posix()
         for path in candidates
-        if path.is_file() and path.suffix in SHOW_SUFFIXES
+        # hidden files: e.g. the copy a save is checked with
+        if path.is_file() and path.suffix in SHOW_SUFFIXES and not path.name.startswith(".")
     )
 
 
@@ -153,12 +159,17 @@ def describe_show(show: Show, lock_path: Path | None) -> dict:
     }
 
 
-def validate_source(text: str, suffix: str) -> None:
-    """Raise if `text` would not load as a show definition of the given file type."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        candidate = Path(temp_dir) / f"show{suffix}"
-        candidate.write_text(text, encoding="utf-8", newline="")
-        Parser().load_show(candidate)
+def validate_source(text: str, file: Path) -> None:
+    """Raise if `text` would not load as the show definition `file`. It is tried next to `file`, so the files
+    it includes are found where the show finds them."""
+    file.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=file.parent,
+                                     prefix=f".{file.stem}.", suffix=f".check{file.suffix}", delete=False) as out:
+        out.write(text)
+    try:
+        Parser().load_show(Path(out.name))
+    finally:
+        Path(out.name).unlink(missing_ok=True)
 
 
 def build_options(data) -> tuple[int, float | None]:
@@ -198,7 +209,7 @@ def upload_folder(show: str) -> Path:
 
 def save_show_text(file: Path, text: str) -> None:
     """Replace a show file with `text`, unless the result would not load."""
-    validate_source(text, file.suffix)
+    validate_source(text, file)
     # Keep the line endings the file already uses.
     newline = "\r\n" if b"\r\n" in file.read_bytes() else "\n"
     file.write_text(text, encoding="utf-8", newline=newline)

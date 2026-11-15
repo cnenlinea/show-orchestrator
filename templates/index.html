@@ -95,6 +95,15 @@
   }
   #mad-types label { gap: 4px; }
   #mad-report h3 { font-size: 13px; margin: 16px 0 6px; }
+  #settings-body { display: grid; gap: 8px; max-width: 640px; margin-top: 8px; }
+  #settings-body h3 { font-size: 13px; margin: 10px 0 0; }
+  #settings-body p { margin: 0; }
+  #settings-body > label { justify-content: space-between; }
+  .settings-rows { display: grid; gap: 4px; }
+  .settings-rows .arrow { align-self: center; color: var(--muted); }
+  .checks { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .checks label { gap: 4px; color: var(--text); }
+  .checks label.error { color: var(--error); }
 </style>
 </head>
 <body>
@@ -129,6 +138,14 @@
       <p id="doc-error" class="status"></p>
       <div id="doc-body" hidden>
         <p id="yaml-hint" class="muted" hidden>Saving rewrites the YAML file from scratch: comments and hand formatting in it are not kept.</p>
+        <section id="settings-section" hidden>
+          <details id="settings">
+            <summary>Settings — included files, REAPER, MadMapper</summary>
+            <div id="settings-body"></div>
+          </details>
+        </section>
+        <datalist id="include-files"></datalist>
+        <datalist id="effect-names"></datalist>
         <section>
           <details id="catalog">
             <summary id="catalog-summary"></summary>
@@ -585,6 +602,7 @@ async function loadMedia() {
 
 async function loadShows() {
   const {shows} = await api("/api/shows");
+  showFiles = shows;
   fillSelect($("show-select"), shows, loadedFile || localStorage.getItem("show"), "none found");
 }
 
@@ -827,7 +845,11 @@ function moveSong(index, offset) {
 function renderSongEditor(song, index) {
   const lanes = h("div");
   const redraw = () => drawLanes(song, lanes);
-  const name = field(song, "name", {placeholder: "Song name", required: true});
+  let previousName = song.name;
+  const name = field(song, "name", {placeholder: "Song name", required: true}, () => {
+    renameSongInSettings(previousName, song.name);
+    previousName = song.name;
+  });
   focusTargets.set(song, name);
   const length = field(song, "duration", {
     className: "time", placeholder: "3:45", required: true, pattern: TIME_PATTERN,
@@ -852,6 +874,7 @@ function renderSongEditor(song, index) {
       iconButton("✕", "Delete this song", () => {
         if (song.rows.length && !confirm(`Delete "${song.name}" and its ${song.rows.length} rows?`)) return;
         doc.songs.splice(index, 1);
+        if (doc.format === "yaml") renameSongInSettings(song.name, "");  // its "no marker" tick goes with it
         renderDoc();
       })),
     lanes,
@@ -902,10 +925,176 @@ function renderCatalog() {
     }));
 }
 
+// ---- Show settings (YAML only): the include:, reaper: and madmapper: sections, which the editor otherwise
+// keeps as they are. Saving checks them like the rest of the show (e.g. default_routing must be a profile).
+let showFiles = [];  // every show definition /api/shows lists, for the include suggestions
+
+const isEmpty = (value) => value == null || value === "" || (Array.isArray(value) && !value.length) ||
+  (typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length);
+
+function getSetting(section, key) {
+  return key === undefined ? doc.sections[section] : doc.sections[section]?.[key];
+}
+
+// Set a setting; an empty one is removed, and so is a section left empty, so the file holds only what is set.
+function setSetting(section, key, value) {
+  if (key === undefined) {
+    if (isEmpty(value)) delete doc.sections[section]; else doc.sections[section] = value;
+  } else {
+    const settings = doc.sections[section] ?? {};
+    if (isEmpty(value)) delete settings[key]; else settings[key] = value;
+    if (Object.keys(settings).length) doc.sections[section] = settings; else delete doc.sections[section];
+  }
+  touched();
+}
+
+// Rows of inputs that are the data themselves, so a half-filled row survives while it is typed: complete rows
+// go to `commit` as arrays of cell texts; a started row needs every cell (and blocks saving until it has them).
+function rowsEditor(columns, rows, commit, addLabel) {
+  const body = h("div", {className: "settings-rows"});
+  const update = () => {
+    const complete = [];
+    for (const row of body.children) {
+      const inputs = [...row.querySelectorAll("input")];
+      const cells = inputs.map((input) => input.value.trim());
+      for (const input of inputs) input.required = cells.some((cell) => cell !== "");
+      if (cells.every((cell) => cell !== "")) complete.push(cells);
+    }
+    commit(complete);
+  };
+  const addRow = (cells = []) => {
+    const parts = [];
+    columns.forEach((column, i) => {
+      if (i > 0 && column.arrow) parts.push(h("span", {className: "arrow", textContent: "→"}));
+      const input = h("input", {
+        value: cells[i] ?? "", placeholder: column.placeholder, title: column.title ?? "",
+        className: column.className ?? "grow", type: column.type ?? "text",
+      });
+      if (column.type === "number") Object.assign(input, {min: 0, step: "any"});
+      if (column.list) input.setAttribute("list", column.list);
+      input.oninput = update;
+      parts.push(input);
+    });
+    const row = h("div", {className: "pair"}, ...parts, iconButton("✕", "Remove", () => { row.remove(); update(); }));
+    body.append(row);
+    return row.querySelector("input");
+  };
+  for (const cells of rows) addRow(cells);
+  return [body, h("div", {}, h("button", {textContent: addLabel, onclick: () => addRow().focus()}))];
+}
+
+function settingNumber(section, key, props) {
+  const value = getSetting(section, key);
+  const input = h("input", {type: "number", className: "number", value: value ?? "", ...props});
+  input.oninput = () => setSetting(section, key, input.value === "" || !input.checkValidity() ? null : Number(input.value));
+  return input;
+}
+
+function renderNoMarkers() {
+  const box = $("no-markers");
+  if (!box) return;
+  const marked = new Set(getSetting("reaper", "no_markers") ?? []);
+  const names = [...new Set([...doc.songs.map((song) => song.name).filter(Boolean), ...marked])];
+  box.replaceChildren(...names.map((name) => {
+    const stale = !doc.songs.some((song) => song.name === name);
+    const check = h("input", {type: "checkbox", checked: marked.has(name)});
+    const validate = () => check.setCustomValidity(stale && check.checked ? `No song is called "${name}" any more` : "");
+    check.onchange = () => {
+      const now = new Set(getSetting("reaper", "no_markers") ?? []);
+      if (check.checked) now.add(name); else now.delete(name);
+      setSetting("reaper", "no_markers", names.filter((n) => now.has(n)));  // in song order
+      validate();
+    };
+    validate();
+    return h("label", {className: stale ? "error" : "", title: stale ? "No song has this name any more: untick it" : ""},
+      check, name);
+  }));
+}
+
+// A song renamed in the editor keeps its "no marker" tick (unless another song still has the old name).
+function renameSongInSettings(before, after) {
+  const list = getSetting("reaper", "no_markers");
+  if (before && list?.includes(before) && !doc.songs.some((song) => song.name === before)) {
+    setSetting("reaper", "no_markers", list.map((name) => name === before ? after : name).filter(Boolean));
+  }
+  renderNoMarkers();
+}
+
+function updateSettingLists() {
+  // includes are relative to the show file: the other show files next to it
+  const folder = loadedFile.includes("/") ? loadedFile.slice(0, loadedFile.lastIndexOf("/") + 1) : "";
+  $("include-files").replaceChildren(...showFiles
+    .filter((file) => file !== loadedFile && file.startsWith(folder) && !file.slice(folder.length).includes("/"))
+    .map((file) => h("option", {value: file.slice(folder.length)})));
+  $("effect-names").replaceChildren(...[...new Set(doc.effects.map((effect) => effect.name))]
+    .map((value) => h("option", {value})));
+}
+
+function renderSettings() {
+  $("settings-section").hidden = doc.format !== "yaml";
+  if (doc.format !== "yaml") return $("settings-body").replaceChildren();
+  updateSettingLists();
+  const profiles = Object.keys(getSetting("reaper", "routing") ?? {});
+  const routing = h("select", {}, h("option", {value: "", textContent: "none"}),
+    ...profiles.map((name) => h("option", {value: name, textContent: name})));
+  routing.value = getSetting("reaper", "default_routing") ?? "";
+  routing.disabled = !profiles.length && !routing.value;
+  routing.onchange = () => setSetting("reaper", "default_routing", routing.value || null);
+  const audioFades = h("select", {},
+    h("option", {value: "", textContent: "not set (off)"}),
+    h("option", {value: "on", textContent: "on"}),
+    h("option", {value: "off", textContent: "off"}));
+  const fadesSetting = getSetting("madmapper", "fades_from_audio");
+  audioFades.value = fadesSetting == null ? "" : fadesSetting ? "on" : "off";
+  audioFades.onchange = () => setSetting("madmapper", "fades_from_audio",
+    audioFades.value === "" ? null : audioFades.value === "on");
+
+  $("settings-body").replaceChildren(
+    h("h3", {textContent: "Included files"}),
+    h("p", {className: "muted", textContent: "Files whose cues join this show's songs, such as the lights timeline light-show-simulator writes. Paths are relative to the show file; upload the file with Add files."}),
+    ...rowsEditor([{placeholder: "musical_2026.lights.csv", list: "include-files"}],
+      (getSetting("include") ?? []).map((file) => [file]),
+      (rows) => setSetting("include", undefined, rows.map(([file]) => file)), "＋ Add included file"),
+
+    h("h3", {textContent: "REAPER"}),
+    h("label", {title: "Silence between one song's end and the next song's start, so the operator can pause before the next song's cues fire. The Build panel can override it."},
+      "Gap between songs (s)", settingNumber("reaper", "gap", {min: 0, step: 0.1, placeholder: {{ default_gap }}})),
+    h("label", {title: "Which machine's MIDI output routing builds use unless the Build panel picks another"},
+      "Default MIDI routing", routing),
+    h("p", {className: "muted", textContent: profiles.length
+      ? `Routing profiles: ${profiles.map((name) => `${name} (${Object.keys(getSetting("reaper", "routing")[name] ?? {}).length} tracks)`).join(", ")}. A new profile is read from a project saved on that machine with reaper_routing.py and pasted in the Source tab.`
+      : "No routing profiles yet: read one from a project saved on the show machine with reaper_routing.py and paste it in the Source tab."}),
+    h("div", {}, "Songs without a marker", h("p", {className: "muted", textContent: "Ticked songs get no REAPER marker (e.g. scene-change music), so the markers are the songs the operator jumps to."})),
+    h("div", {className: "checks", id: "no-markers"}),
+    h("div", {}, "Split MIDI tracks", h("p", {className: "muted", textContent: "A MIDI track (by its name) inside the extra tracks' .mid files that moves to a REAPER track of its own, to route it to its own output."})),
+    ...rowsEditor([
+      {placeholder: "MIDI track in the file, e.g. Letras ReWorship"},
+      {placeholder: "REAPER track, e.g. Letras", arrow: true},
+    ], Object.entries(getSetting("reaper", "split_midi") ?? {}),
+    (rows) => setSetting("reaper", "split_midi", Object.fromEntries(rows)), "＋ Add split"),
+
+    h("h3", {textContent: "MadMapper"}),
+    h("label", {title: "Fade each cue in over the silence that follows it in its song's audio, so the picture arrives with the music"},
+      "Fades from the audio", audioFades),
+    h("label", {title: "With fades from the audio, audio quieter than this counts as silence"},
+      "Silence threshold (dBFS)", settingNumber("madmapper", "silence_threshold", {step: 1, placeholder: MAD_DEFAULT_THRESHOLD})),
+    h("div", {}, "Fades by cue", h("p", {className: "muted", textContent: "A fixed fade for a cue, e.g. to land on a hit; wins over the fades from the audio."})),
+    ...rowsEditor([
+      {placeholder: "Cue name", list: "effect-names"},
+      {placeholder: "seconds", type: "number", className: "number", arrow: true},
+    ], Object.entries(getSetting("madmapper", "fades") ?? {}).map(([cue, seconds]) => [cue, String(seconds)]),
+    (rows) => setSetting("madmapper", "fades", Object.fromEntries(rows.map(([cue, seconds]) => [cue, Number(seconds)]))),
+    "＋ Add fade"),
+  );
+  renderNoMarkers();
+}
+
 function renderDoc(focus) {
   $("yaml-hint").hidden = doc.format !== "yaml";
   $("doc-songs").replaceChildren(...doc.songs.map(renderSongEditor));
   renderCatalog();
+  renderNoMarkers();  // songs may have been added, removed or renamed
+  if (doc.format === "yaml") updateSettingLists();
   touched();
   if (focus) focusTargets.get(focus)?.focus();
 }
@@ -919,6 +1108,7 @@ async function loadDoc() {
     try {
       doc = await api(`/api/document?file=${encodeURIComponent(file)}`);
       savedDoc = JSON.stringify(doc);
+      renderSettings();
       renderDoc();
     } catch (err) {
       $("doc-error").textContent =
@@ -935,6 +1125,7 @@ async function saveDoc() {
   const invalid = $("view-edit").querySelector(":invalid");
   if (invalid) {
     $("catalog").open ||= $("catalog").contains(invalid);
+    $("settings").open ||= $("settings").contains(invalid);
     invalid.focus();
     return setStatus("Fill in or fix the highlighted field first.", "error", "edit-status");
   }

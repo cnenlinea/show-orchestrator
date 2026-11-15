@@ -522,3 +522,93 @@ def test_show_reports_its_madmapper_settings(client, root):
     assert show["madmapper"]["fades"] == {"Intro": 0.2}
     assert show["effect_types"] == ["projection"]
     assert client.get("/api/show?file=shows/demo/demo.csv").get_json()["madmapper"] == {}
+
+
+# --- show settings in the editor (the YAML sections it otherwise keeps as they are)
+
+@pytest.fixture
+def yaml_show(root):
+    (root / "shows" / "demo" / "lights.csv").write_text("name,type,timestamp,duration,note,file\nIntro,audio,,1:00,,\n",
+                                                       encoding="utf-8")
+    (root / "shows" / "demo" / "set.yaml").write_text(
+        "reaper:\n"
+        "  routing:\n"
+        "    mac:\n"
+        "      projection: 64\n"
+        "effects:\n"
+        "  projection:\n"
+        "  - {id: Stars, name: Stars}\n"
+        "audio_tracks:\n"
+        "- name: Intro\n"
+        "  duration: '1:00'\n"
+        "  events:\n"
+        "    projection:\n"
+        "    - {effect_id: Stars, timestamp: '0:00'}\n"
+        "- name: Escenografia\n"
+        "  duration: '0:30'\n"
+        "  events: {}\n",
+        encoding="utf-8",
+    )
+    return "shows/demo/set.yaml"
+
+
+def save_sections(client, show, change):
+    document = client.get(f"/api/document?file={show}").get_json()
+    change(document["sections"])
+    return client.put("/api/document", json={"file": show, "document": document})
+
+
+def test_settings_are_saved_into_the_yaml(client, root, yaml_show):
+    from show_orchestrator.parser import Parser
+
+    def change(sections):
+        sections["include"] = ["lights.csv"]
+        sections["reaper"].update(gap=1.5, default_routing="mac", no_markers=["Escenografia"],
+                                  split_midi={"Letras ReWorship": "Letras"})
+        sections["madmapper"] = {"fades_from_audio": True, "silence_threshold": -35, "fades": {"Stars": 0.2}}
+
+    assert save_sections(client, yaml_show, change).status_code == 200
+    show = Parser().load_show(root / yaml_show)
+    assert show.include == ["lights.csv"]
+    assert (show.reaper.gap, show.reaper.default_routing) == (1.5, "mac")
+    assert show.reaper.no_markers == ["Escenografia"]
+    assert show.reaper.split_midi == {"Letras ReWorship": "Letras"}
+    assert show.reaper.routing == {"mac": {"projection": 64}}  # the profiles the settings don't edit are kept
+    assert show.madmapper.fades == {"Stars": 0.2} and show.madmapper.silence_threshold == -35
+
+
+def test_settings_removed_leave_the_yaml(client, root, yaml_show):
+    assert save_sections(client, yaml_show, lambda sections: sections.pop("reaper")).status_code == 200
+    assert "reaper" not in (root / yaml_show).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("change, message", [
+    (lambda s: s["reaper"].update(default_routing="pc"), "default_routing 'pc' is not one of the routing profiles"),
+    (lambda s: s["reaper"].update(gap=-1), "gap"),
+    (lambda s: s["reaper"].update(markers=["Intro"]), "markers"),
+    (lambda s: s.update(madmapper={"fades": {"Stars": -2}}), "fades"),
+])
+def test_bad_settings_are_not_saved(client, root, yaml_show, change, message):
+    before = (root / yaml_show).read_bytes()
+    response = save_sections(client, yaml_show, change)
+    assert response.status_code == 400
+    assert message in response.get_json()["error"]
+    assert (root / yaml_show).read_bytes() == before
+
+
+def test_a_show_with_an_include_can_be_saved(client, root, yaml_show):
+    # the check before saving loads the show next to the file, where its included files are
+    (root / yaml_show).write_text((root / yaml_show).read_text(encoding="utf-8") + "include: [lights.csv]\n",
+                                  encoding="utf-8")
+    text = client.get(f"/api/source?file={yaml_show}").get_json()["text"]
+    response = client.put("/api/source", json={"file": yaml_show, "text": text.replace("'1:00'", "'1:05'")})
+    assert response.status_code == 200, response.get_json()
+    assert not [p for p in (root / "shows" / "demo").iterdir() if ".check" in p.name]
+
+
+def test_compose_and_hidden_files_are_not_shows(client, root):
+    (root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    (root / "shows" / "demo" / ".demo.x.check.csv").write_text("x\n", encoding="utf-8")
+    shows = client.get("/api/shows").get_json()["shows"]
+    assert "compose.yaml" not in shows and not [s for s in shows if ".check" in s]
+    assert "shows/demo/demo.csv" in shows

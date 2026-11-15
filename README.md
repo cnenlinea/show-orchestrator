@@ -92,6 +92,12 @@ The **Edit** tab is a graphical editor for the selected show, the same for CSV a
 - A cue is a time, an optional hold, a type and an effect picked from a list; **＋ New effect…** in that list creates one.
 - The lanes above each list show the song as you edit it: drag a cue to move it (hold Shift for tenths of a second), or double-click a lane to add a cue there.
 - **Effects** at the top lists every effect. Renaming one renames it in all its cues, and a note (and, for YAML, a channel) can be pinned or left automatic.
+- **Settings** (YAML shows) edits the show's [settings sections](#show-settings-yaml-only):
+  - the `include:` files
+  - REAPER's `gap`, `default_routing`, `split_midi`, and the songs without a marker (`no_markers`, one tick per song)
+  - MadMapper's `fades_from_audio`, `silence_threshold` and per-cue `fades`
+
+  A song renamed in the editor keeps its tick. Routing profiles are listed but still come from `reaper_routing.py` via the Source tab. Saving checks these like the rest of the show: a `default_routing` that is not a profile, or a negative gap, is refused.
 
 Fields that are missing or malformed are outlined in red, and saving (button or Ctrl+S) is refused if the result would not load, so the editor can't leave you with a broken show. Saving rewrites the file: a CSV keeps its header and row order, while a YAML file loses any comments and hand formatting. The **Source** tab still edits the file as text, with the same check on save.
 
@@ -132,7 +138,10 @@ To deploy to the Arcane host (the same way as SauronsEye's replay server):
 ```console
 python tools/arcane_deploy.py deploy     # upload the build context, build the image on the host, (re)start the container
 python tools/arcane_deploy.py status     # workspace, last builds, container, volumes
+python tools/arcane_deploy.py deploy --show shows/musical_2026/musical_2026.yaml   # only this show (and what it uses)
 ```
+
+`--show` (repeatable) sends only the named shows, and of each only what it uses: the show file, its note lock, included files and referenced media. Unused files (like a 241 MB video next to the show) stay home. Without `--show`, all of `shows/` goes. The script warns about any file over 95 MB, since Cloudflare refuses requests over 100 MB.
 
 It reads `arcane_server`, `arcane_api` (an Arcane API key) and the login (`orchestrator_users`, or `orchestrator_password`; otherwise SauronsEye's `replay_password`) from the environment, this repository's `.env`, or `H:\SauronsEye\.env`, in that order. It won't start the container without a login unless given `--open`. On a host with Docker Compose, `docker compose up -d --build` with [compose.yaml](compose.yaml) does the same.
 
