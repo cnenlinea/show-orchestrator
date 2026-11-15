@@ -161,6 +161,7 @@ class MadMapperSettings(BaseModel):
 
 
 class Show(BaseModel):
+    title: str | None = None  # the name people see (e.g. on the downloads page); default: from the file name
     audio_tracks: list[AudioTrack]
     effects: dict[EffectType, list[Effect]]
     # files whose cues join this show's songs (matched by song name); see parser.py

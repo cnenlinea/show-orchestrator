@@ -612,3 +612,46 @@ def test_compose_and_hidden_files_are_not_shows(client, root):
     shows = client.get("/api/shows").get_json()["shows"]
     assert "compose.yaml" not in shows and not [s for s in shows if ".check" in s]
     assert "shows/demo/demo.csv" in shows
+
+
+# --- the REAPER downloads page
+
+def test_reaper_page_lists_shows_by_readable_name(client, root):
+    (root / "shows" / "demo" / "named.yaml").write_text(
+        "title: Musical de Navidad 2026\n"
+        "effects: {}\n"
+        "audio_tracks:\n"
+        "- {name: Intro, duration: '1:30', events: {}}\n",
+        encoding="utf-8")
+    (root / "shows" / "demo" / "broken_show.yaml").write_text("audio_tracks: [\n", encoding="utf-8")
+    page = client.get("/reaper")
+    assert page.status_code == 200
+    html = page.data.decode()
+    assert "Musical de Navidad 2026" in html  # its title:
+    assert "Demo" in html and "Broken Show" in html  # else from the file name
+    assert "1 song · about 2 min" in html
+    assert "does not load" in html  # a show that doesn't load is listed, its button off
+    (root / "shows" / "demo" / "demo.yaml").write_text("effects: {}\naudio_tracks: []\n", encoding="utf-8")
+    html = client.get("/reaper").data.decode()
+    assert "Demo (CSV)" in html and "Demo (YAML)" in html  # the same name twice
+
+
+def test_reaper_download_holds_only_what_reaper_needs(client, media_show):
+    import io
+    import zipfile
+
+    made = client.post("/api/reaper", json={"file": media_show})
+    assert made.status_code == 200, made.get_json()
+    assert made.get_json()["download"].endswith("withmedia_reaper.zip")
+    with zipfile.ZipFile(io.BytesIO(client.get(made.get_json()["download"]).data)) as bundle:
+        names = set(bundle.namelist())
+        project = bundle.read("withmedia/withmedia.rpp").decode()
+    assert "withmedia/shows/demo/media/song.mp3" in names
+    assert "shows/demo/media/song.mp3" in project
+    assert any(name.endswith(".mid") and name.count("/") == 1 for name in names)
+    # nothing but the project, its MIDI and its media
+    assert all(name.endswith((".rpp", ".mid", ".mp3")) for name in names), names
+
+
+def test_reaper_download_of_an_unknown_show(client):
+    assert client.post("/api/reaper", json={"file": "nope.csv"}).status_code == 404

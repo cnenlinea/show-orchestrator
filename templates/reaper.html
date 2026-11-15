@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REAPER downloads · Show Orchestrator</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f5f7; --panel: #fff; --border: #d9dce1; --text: #1c1f24; --muted: #667080;
+    --accent: #2f6fed; --ok: #1f7a3a; --error: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171b; --panel: #1e2126; --border: #33373f; --text: #e6e8ec; --muted: #98a1b0;
+      --accent: #6c9bff; --ok: #5fd07f; --error: #ff7b72;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header {
+    display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 17px; margin: 0; }
+  header .right { margin-left: auto; color: var(--muted); font-size: 13px; }
+  a { color: var(--accent); }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
+  .hint { color: var(--muted); margin: 0 0 20px; }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+  li {
+    display: flex; align-items: center; gap: 16px; padding: 16px 18px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .info { flex: 1; min-width: 0; }
+  .info h2 { font-size: 19px; margin: 0; }
+  .info p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  .status { margin-top: 4px; font-size: 13px; white-space: pre-wrap; }
+  .status.ok { color: var(--ok); }
+  .status.error { color: var(--error); }
+  button {
+    font: inherit; font-size: 17px; font-weight: 600; padding: 14px 22px; min-width: 210px;
+    border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button:disabled { opacity: .55; cursor: default; }
+  @media (max-width: 560px) {
+    li { flex-direction: column; align-items: stretch; }
+    button { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>REAPER downloads</h1>
+  <span class="right"><a href="{{ url_for('index') }}">Show editor</a>{% if user %} · {{ user }} · <a href="{{ url_for('logout') }}">Log out</a>{% endif %}</span>
+</header>
+<main>
+  <p class="hint">Each download is a zip with the show's REAPER project and every audio and MIDI file it plays. <strong>Extract the whole zip</strong>, then open the <code>.rpp</code> inside the extracted folder.</p>
+  {% if not shows %}<p class="hint">No shows yet.</p>{% endif %}
+  <ul>
+    {% for show in shows %}
+    <li>
+      <div class="info">
+        <h2>{{ show.title }}</h2>
+        {% if show.error %}
+        <p class="status error">This show does not load: {{ show.error }}</p>
+        {% else %}
+        <p>{{ show.songs }} song{{ "" if show.songs == 1 else "s" }} · about {{ show.minutes }} min</p>
+        {% endif %}
+        <p class="status" id="status-{{ loop.index }}"></p>
+      </div>
+      <button data-file="{{ show.file }}" data-status="status-{{ loop.index }}" {% if show.error %}disabled{% endif %}>Download for REAPER</button>
+    </li>
+    {% endfor %}
+  </ul>
+</main>
+<script>
+async function download(button) {
+  const status = document.getElementById(button.dataset.status);
+  const say = (text, kind = "") => { status.textContent = text; status.className = `status ${kind}`; };
+  button.disabled = true;
+  say("Preparing… (gathering every audio file can take a moment)");
+  try {
+    const response = await fetch("{{ url_for('reaper_bundle') }}", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({file: button.dataset.file}),
+    });
+    if (response.status === 401) {
+      location.href = `{{ url_for('login') }}?next=${encodeURIComponent(location.pathname)}`;
+      return;
+    }
+    const data = await response.json().catch(() => ({error: `Server error (${response.status})`}));
+    if (!response.ok) throw new Error(data.error || `Server error (${response.status})`);
+    say(`Downloading ${(data.size / 1e6).toFixed(0)} MB… Extract the whole zip, then open the .rpp inside.`, "ok");
+    const link = Object.assign(document.createElement("a"), {href: data.download, download: ""});
+    document.body.append(link);
+    link.click();
+    link.remove();
+  } catch (err) {
+    say(err.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+for (const button of document.querySelectorAll("button[data-file]")) button.onclick = () => download(button);
+</script>
+</body>
+</html>

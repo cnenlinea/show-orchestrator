@@ -18,7 +18,7 @@ from flask import Flask, g, jsonify, redirect, render_template, request, send_fi
 
 from main import AVAILABLE_BACKENDS
 from show_orchestrator.backends.reaper import DEFAULT_SONG_GAP, reaper_settings
-from show_orchestrator.bundle import write_bundle
+from show_orchestrator.bundle import write_bundle, write_reaper_bundle
 from show_orchestrator.madmapper import DEFAULT_DEVICE, note_name
 from show_orchestrator.madupload import check_project, parse_fades, patch_upload
 from show_orchestrator.editor import read_document, render_document
@@ -222,6 +222,14 @@ def upload_name(filename: str | None) -> str:
     name = re.split(r"[\\/]", filename or "")[-1]
     name = re.sub(r'[<>:"|?*\x00-\x1f]', "_", name).strip(" .")
     return name
+
+
+def show_title(file: str | Path, show: Show | None = None) -> str:
+    """The name people see: the show's `title:`, else its file name made readable (musical_2026 -> Musical 2026)."""
+    if show is not None and show.title and show.title.strip():
+        return show.title.strip()
+    words = [word for word in re.split(r"[_\-\s]+", Path(file).stem) if word]
+    return " ".join(word[:1].upper() + word[1:] for word in words) or Path(file).stem
 
 
 def upload_folder(show: str) -> Path:
@@ -572,6 +580,51 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
     @app.get("/api/bundle/<name>")
     def download_bundle(name: str):
         return send_from_directory(root / BUNDLE_DIR, name, as_attachment=True)
+
+    # --- the downloads page: each show and its REAPER project, for whoever runs the show
+
+    @app.get("/reaper")
+    def reaper_page():
+        shows = []
+        for name in find_show_files(root):
+            try:
+                show = Parser().load_show(root / name)
+            except SHOW_ERRORS as exc:
+                shows.append({"file": name, "title": show_title(name), "error": str(exc)})
+                continue
+            seconds = sum(track.duration_seconds for track in show.audio_tracks)
+            shows.append({"file": name, "title": show_title(name, show), "songs": len(show.audio_tracks),
+                          "minutes": round(seconds / 60)})
+        # the same name twice (musical.yaml and musical.csv): tell them apart by type, then by folder
+        for tell in (lambda f: Path(f).suffix[1:].upper(), lambda f: Path(f).parent.name or "root"):
+            counts: dict[str, int] = {}
+            for row in shows:
+                counts[row["title"]] = counts.get(row["title"], 0) + 1
+            for row in shows:
+                if counts[row["title"]] > 1:
+                    row["title"] = f"{row['title']} ({tell(row['file'])})"
+        shows.sort(key=lambda row: row["title"].lower())
+        return render_template("reaper.html", shows=shows, user=current_user() if users else None)
+
+    @app.post("/api/reaper")
+    def reaper_bundle():
+        """Only what REAPER needs to play a show (project, MIDI, the media it plays) as a zip, built with the
+        show's own settings (its gap and default routing), to download from /api/bundle/<name>."""
+        file = show_file((request.get_json(silent=True) or {}).get("file"))
+        if file is None:
+            return error("Unknown show file", 404)
+        folder = root / BUNDLE_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{file.stem}_reaper.zip"
+        partial = folder / f"{target.name}.{uuid.uuid4().hex[:8]}.part"
+        try:
+            with open(partial, "wb") as out:
+                write_reaper_bundle(root, file.relative_to(root), out)
+            partial.replace(target)
+        except SHOW_ERRORS as exc:
+            partial.unlink(missing_ok=True)
+            return error(str(exc))
+        return jsonify(download=url_for("download_bundle", name=target.name), size=target.stat().st_size)
 
     def project_info(file: Path) -> dict:
         relative = file.relative_to(root)

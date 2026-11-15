@@ -71,12 +71,63 @@ def show_dependencies(root: Path, show_file: Path, show: Show) -> list[PurePosix
     for include in show.include or []:
         path = Path(include)
         files.append(_inside(root, path if path.is_absolute() else (root / show_file).parent / path, "Included file"))
+    files += media_dependencies(root, show)
+    return list(dict.fromkeys(files))
+
+
+def media_dependencies(root: Path, show: Show) -> list[PurePosixPath]:
+    """The media `show` plays (each song's file and its extra tracks), relative to root."""
+    files = []
     for track in show.audio_tracks:
         if track.file_path:
             files.append(_inside(root, Path(track.file_path), "Media file"))
         for extra in track.extra_tracks or []:
             files.append(_inside(root, Path(extra.file_path), "Media file"))
     return list(dict.fromkeys(files))
+
+
+def _build_reaper(root: Path, show_file: Path, show: Show, build: Path, velocity: int, gap: float | None,
+                  routing: str | None, note_lock: bool) -> Path | None:
+    """The show's MIDI files and its REAPER project (referencing the media where the show has it) into `build`;
+    returns the note lock used, if any."""
+    gap, routing_map = reaper_settings(show, gap, routing)
+    lock_path = lock_path_for(root / show_file) if note_lock else None
+    # generated first: it may add notes to the lock, which the project then uses
+    midi_files = MidiGenerator(velocity=velocity).generate_midi_files(show, build, lock_path)
+    backend = ReaperBackend()
+    backend.create_project(show, midi_files, build, song_gap=gap, routing=routing_map, media_in_place=True)
+    backend.save_project(build / f"{show_file.stem}.rpp")
+    return lock_path
+
+
+def write_reaper_bundle(
+    root: Path,
+    show_file: Path,
+    out: BinaryIO,
+    velocity: int = DEFAULT_VELOCITY,
+    gap: float | None = None,
+    routing: str | None = None,
+    note_lock: bool = True,
+) -> None:
+    """Only what REAPER needs to play the show: the project, its MIDI files and the media it plays, laid out as in
+    a full bundle (<show>/<show>.rpp, <show>/*.mid, <show>/shows/.../media). No show files, lighting or MadMapper."""
+    show_file = Path(show_file)
+    name = show_file.stem
+    show = Parser().load_show(root / show_file)
+    media = media_dependencies(root, show)
+    with tempfile.TemporaryDirectory() as tmp:
+        build = Path(tmp)
+        _build_reaper(root, show_file, show, build, velocity, gap, routing, note_lock)
+        with zipfile.ZipFile(out, "w") as bundle:
+            def add(path: Path, arcname: str) -> None:
+                stored = path.suffix.lower() in STORED_SUFFIXES
+                bundle.write(path, f"{name}/{arcname}", zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED)
+
+            for path in sorted(build.rglob("*")):
+                if path.is_file():
+                    add(path, path.relative_to(build).as_posix())
+            for relative in media:
+                add(root / relative, str(relative))
 
 
 def write_bundle(
@@ -97,19 +148,13 @@ def write_bundle(
     name = show_file.stem
     show = Parser().load_show(root / show_file)
     files = show_dependencies(root, show_file, show)
-    gap, routing_map = reaper_settings(show, gap, routing)
     with tempfile.TemporaryDirectory() as tmp:
         build = Path(tmp)
-        lock_path = lock_path_for(root / show_file) if note_lock else None
-        # generated first: it may add notes to the lock, which then goes into the zip as the project uses it
-        midi_files = MidiGenerator(velocity=velocity).generate_midi_files(show, build, lock_path)
-        if lock_path is not None and lock_path.is_file():
+        lock_path = _build_reaper(root, show_file, show, build, velocity, gap, routing, note_lock)
+        if lock_path is not None and lock_path.is_file():  # it may be new: notes assigned for this build
             lock = _inside(root, lock_path, "Note lock")
             if lock not in files:
                 files.append(lock)
-        backend = ReaperBackend()
-        backend.create_project(show, midi_files, build, song_gap=gap, routing=routing_map, media_in_place=True)
-        backend.save_project(build / f"{name}.rpp")
         warnings = []
 
         lighting = [f for f in lighting_files(root, show_file) if f not in files]

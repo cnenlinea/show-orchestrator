@@ -117,7 +117,7 @@
   <label>MIDI port <select id="port-select"></select></label>
   <button id="refresh-ports" title="Look for MIDI ports again">↻</button>
   <span id="summary" class="muted"></span>
-  {% if user %}<span class="muted" style="margin-left: auto">{{ user }} · <a href="{{ url_for('logout') }}">Log out</a></span>{% endif %}
+  <span class="muted" style="margin-left: auto"><a href="{{ url_for('reaper_page') }}" title="Each show's REAPER project with its audio and MIDI, one button each">REAPER downloads</a>{% if user %} · {{ user }} · <a href="{{ url_for('logout') }}">Log out</a>{% endif %}</span>
 </header>
 
 <main>
