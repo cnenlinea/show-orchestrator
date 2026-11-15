@@ -655,3 +655,23 @@ def test_reaper_download_holds_only_what_reaper_needs(client, media_show):
 
 def test_reaper_download_of_an_unknown_show(client):
     assert client.post("/api/reaper", json={"file": "nope.csv"}).status_code == 404
+
+
+def test_a_user_can_start_on_another_page(root):
+    from web import homes_from_env
+
+    app = create_app(root, users={"fer": "pw", "sonido": "pw2"}, homes={"sonido": "/reaper"})
+    sonido, fer = app.test_client(), app.test_client()
+    # logging in from the start page goes to the user's own; a page asked for is kept
+    assert sonido.post("/login", data={"user": "sonido", "password": "pw2", "next": "/"}).headers["Location"] == "/reaper"
+    assert sonido.get("/").headers["Location"] == "/reaper"
+    assert sonido.get("/?editor=1").status_code == 200  # the editor is still there
+    later = app.test_client()
+    asked = later.post("/login", data={"user": "sonido", "password": "pw2", "next": "/api/shows"})
+    assert asked.headers["Location"] == "/api/shows"
+    # others start in the editor as before
+    assert fer.post("/login", data={"user": "fer", "password": "pw", "next": "/"}).headers["Location"] == "/"
+    assert fer.get("/").status_code == 200
+    # only pages on this site
+    assert homes_from_env({"SHOW_ORCHESTRATOR_HOMES": "sonido:/reaper;x://evil.example;y:https://evil"}) == {
+        "sonido": "/reaper"}

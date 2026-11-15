@@ -50,6 +50,7 @@ USERS_ENV = "SHOW_ORCHESTRATOR_USERS"        # "name:password,name:password"
 PASSWORD_ENV = "SHOW_ORCHESTRATOR_PASSWORD"  # one password, for the user "show"
 SECRET_ENV = "SHOW_ORCHESTRATOR_SECRET"      # signs the login cookie; default: derived from the users
 TOKENS_ENV = "SHOW_ORCHESTRATOR_TOKENS"      # "name:token,name:token": other programs (ReQLC), lighting and media only
+HOMES_ENV = "SHOW_ORCHESTRATOR_HOMES"        # "user:/page,...": where a user starts, e.g. "sonido:/reaper"
 PASSWORD_USER = "show"
 SESSION_DAYS = 30
 
@@ -65,6 +66,11 @@ def users_from_env(environ=os.environ) -> dict[str, str]:
 def tokens_from_env(environ=os.environ) -> dict[str, str]:
     """The programs that may publish lighting and read media, {name: token}, from SHOW_ORCHESTRATOR_TOKENS."""
     return _pairs(environ.get(TOKENS_ENV))
+
+
+def homes_from_env(environ=os.environ) -> dict[str, str]:
+    """Where users start instead of the editor, {name: path}, from SHOW_ORCHESTRATOR_HOMES (paths on this site)."""
+    return {name: path for name, path in _pairs(environ.get(HOMES_ENV)).items() if safe_next(path) == path}
 
 
 def _pairs(text: str | None) -> dict[str, str]:
@@ -266,13 +272,15 @@ def save_show_text(file: Path, text: str) -> None:
 
 
 def create_app(root: Path, users: dict[str, str] | None = None, secret: str | None = None,
-               tokens: dict[str, str] | None = None) -> Flask:
+               tokens: dict[str, str] | None = None, homes: dict[str, str] | None = None) -> Flask:
     """The web UI over the shows under `root`. `users` ({name: password}; default: the environment's) turns on the
     login; with none the app is open. `tokens` ({name: token}; default: the environment's) let other programs, such
-    as ReQLC, publish a show's lighting and read its media with `Authorization: Bearer <token>`, and nothing else."""
+    as ReQLC, publish a show's lighting and read its media with `Authorization: Bearer <token>`, and nothing else.
+    `homes` ({name: path}; default: the environment's) sends a user to that page instead of the editor."""
     app = Flask(__name__)
     users = users_from_env() if users is None else users
     tokens = tokens_from_env() if tokens is None else tokens
+    homes = homes_from_env() if homes is None else homes
     secret = secret or os.environ.get(SECRET_ENV)
     # Derived from the users when not given, so a restart keeps everyone logged in and a changed password logs out.
     app.secret_key = secret or hashlib.sha256(
@@ -350,7 +358,7 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
                 session.clear()
                 session["user"] = name
                 session.permanent = True
-                return redirect(target)
+                return redirect(homes.get(name, target) if target == "/" else target)
             failed = True
         return render_template("login.html", next=target, failed=failed, user=request.form.get("user", "")), (401 if failed else 200)
 
@@ -361,6 +369,9 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
 
     @app.get("/")
     def index():
+        home = homes.get(current_user() or "")
+        if home and home != "/" and "editor" not in request.args:  # the editor stays at /?editor
+            return redirect(home)
         return render_template(
             "index.html",
             effect_types=[str(effect_type) for effect_type in EffectType],

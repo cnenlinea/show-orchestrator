@@ -14,6 +14,7 @@ Settings come from the environment, then this repository's .env, then SauronsEye
     orchestrator_password   one password, user "show"       -> SHOW_ORCHESTRATOR_PASSWORD
                             (falls back to replay_password, the SauronsEye replay's)
     orchestrator_tokens     "reqlc:<token>": programs that publish lighting and read media -> SHOW_ORCHESTRATOR_TOKENS
+    orchestrator_homes      "sonido:/reaper": where a user starts instead of the editor  -> SHOW_ORCHESTRATOR_HOMES
 `up` refuses to start the container without a login unless given --open.
 
 `sync` uploads what the Dockerfile copies (the files .dockerignore lets through, shows and their media included)
@@ -259,6 +260,8 @@ def login_env(conf: dict[str, str]) -> list[str]:
         env.append(f"SHOW_ORCHESTRATOR_PASSWORD={password}")
     if conf.get("orchestrator_tokens"):  # "reqlc:<token>": programs that publish lighting and read media
         env.append(f"SHOW_ORCHESTRATOR_TOKENS={conf['orchestrator_tokens']}")
+    if conf.get("orchestrator_homes"):  # "sonido:/reaper": where a user starts instead of the editor
+        env.append(f"SHOW_ORCHESTRATOR_HOMES={conf['orchestrator_homes']}")
     return env
 
 

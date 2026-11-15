@@ -52,7 +52,7 @@
 <body>
 <header>
   <h1>REAPER downloads</h1>
-  <span class="right"><a href="{{ url_for('index') }}">Show editor</a>{% if user %} · {{ user }} · <a href="{{ url_for('logout') }}">Log out</a>{% endif %}</span>
+  <span class="right"><a href="{{ url_for('index', editor=1) }}">Show editor</a>{% if user %} · {{ user }} · <a href="{{ url_for('logout') }}">Log out</a>{% endif %}</span>
 </header>
 <main>
   <p class="hint">Each download is a zip with the show's REAPER project and every audio and MIDI file it plays. <strong>Extract the whole zip</strong>, then open the <code>.rpp</code> inside the extracted folder.</p>

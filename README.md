@@ -136,6 +136,7 @@ With neither variable below set, the web UI is open (as on the show machine, whe
 | `SHOW_ORCHESTRATOR_USERS` | Named users: `name:password,name:password` |
 | `SHOW_ORCHESTRATOR_PASSWORD` | One password, for the user `show` |
 | `SHOW_ORCHESTRATOR_SECRET` | Optional: signs the login cookie. By default it's derived from the users, so a restart keeps everyone logged in and changing a password logs everyone out |
+| `SHOW_ORCHESTRATOR_HOMES` | Optional: `user:/page` pairs, where a user starts instead of the editor, e.g. `sonido:/reaper` for the sound desk. They land there after logging in and when opening `/`; the editor stays at `/?editor` |
 | `SHOW_ORCHESTRATOR_TOKENS` | Optional: `name:token` pairs for programs (ReQLC), which may use only the lighting and media routes (see Lighting from ReQLC) |
 
 A browser logs in at `/login` and stays logged in for 30 days (**Log out** in the header). Scripts can send HTTP basic auth to the `/api/` routes instead. Without a login the API answers 401.
@@ -154,7 +155,7 @@ python tools/arcane_deploy.py deploy --show shows/musical_2026/musical_2026.yaml
 
 `--show` (repeatable) sends only the named shows, and of each only what it uses: the show file, its note lock, included files and referenced media. Unused files (like a 241 MB video next to the show) stay home. Without `--show`, all of `shows/` goes. The script warns about any file over 95 MB, since Cloudflare refuses requests over 100 MB.
 
-It reads `arcane_server`, `arcane_api` (an Arcane API key), the login (`orchestrator_users`, or `orchestrator_password`; otherwise SauronsEye's `replay_password`) and the program tokens (`orchestrator_tokens`) from the environment, this repository's `.env`, or `H:\SauronsEye\.env`, in that order. It won't start the container without a login unless given `--open`. On a host with Docker Compose, `docker compose up -d --build` with [compose.yaml](compose.yaml) does the same.
+It reads `arcane_server`, `arcane_api` (an Arcane API key), the login (`orchestrator_users`, or `orchestrator_password`; otherwise SauronsEye's `replay_password`) the program tokens (`orchestrator_tokens`) and the users' start pages (`orchestrator_homes`, e.g. `sonido:/reaper`) from the environment, this repository's `.env`, or `H:\SauronsEye\.env`, in that order. It won't start the container without a login unless given `--open`. On a host with Docker Compose, `docker compose up -d --build` with [compose.yaml](compose.yaml) does the same.
 
 ### Note mapper GUI
 
