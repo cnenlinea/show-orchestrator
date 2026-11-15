@@ -96,6 +96,24 @@ def test_project_survives_save_and_load_unchanged():
     assert reloaded.to_bytes() == data
 
 
+def test_madmapper_6_index_variant_maps_survive_save_and_load_unchanged():
+    # MadMapper 6 writes an IndexVariantMap (a QMap<int, QVariant>) e.g. on a Polylines Output module: a count,
+    # then an int key and a variant per entry. Values after it must still be read from the right place.
+    an_int = struct.pack(">I", T_INT) + b"\x00" + struct.pack(">i", 7)
+    mad = MadProject(25, [
+        ("module", (T_LIST, [
+            string("Polylines Output"),
+            (T_USER, (b"IndexVariantMap\x00", struct.pack(">I", 0)), 0),
+            (T_USER, (b"IndexVariantMap\x00", struct.pack(">I", 1) + struct.pack(">i", 3) + an_int), 0),
+        ], 0)),
+        ("audio_enabled", (T_BOOL, True, 0)),
+    ])
+    data = mad.to_bytes()
+    reloaded = MadProject.from_bytes(data)
+    assert reloaded.root == mad.root
+    assert reloaded.to_bytes() == data
+
+
 def test_image_without_png_after_its_flag_is_an_error():
     mad = MadProject(12, [("thumbnail", (T_IMAGE, b"\x00\x00\x00\x01not a png", 0))])
     with pytest.raises(MadFileError):

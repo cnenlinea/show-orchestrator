@@ -129,6 +129,10 @@ class _Reader:
             self.take(8 * self.u32())
         elif name == b"FilePath\x00":
             self.qstring()
+        elif name == b"IndexVariantMap\x00":  # MadMapper 6, e.g. a Polylines Output module: a QMap<int, QVariant>
+            for _ in range(self.u32()):
+                self.take(4)
+                self.variant()
         else:
             raise MadFileError(f"unsupported user type {name!r} at offset {start}")
         return (name, self.data[payload_start:self.pos])
