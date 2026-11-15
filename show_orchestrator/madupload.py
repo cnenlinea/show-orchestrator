@@ -72,6 +72,23 @@ def _extract(data: Path, into: Path) -> Path:
     raise MadFileError("the zip should hold one .madproject folder (zip the folder itself)")
 
 
+def patched_stem(stem: str) -> str:
+    """The name a patched copy gets: `<stem>_midi`, once (a project patched before keeps its name)."""
+    return stem if stem.lower().endswith("_midi") else f"{stem}_midi"
+
+
+def check_project(upload: Path, filename: str) -> None:
+    """Raise MadFileError unless `upload` (named `filename`) is a project `patch_upload` can patch."""
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".mad":
+        MadProject.from_bytes(upload.read_bytes())
+        return
+    if suffix != ".zip":
+        raise MadFileError("upload a .mad file, or a .madproject folder zipped")
+    with tempfile.TemporaryDirectory() as tmp:
+        MadProject.load(mad_file_in(_extract(upload, Path(tmp))))
+
+
 def _beside(original: str | None, name: str) -> str:
     """The original projectPath with its last part replaced by `name`: where the patched copy would sit if it
     were saved next to the original, as madmapper_patch.py saves it."""
@@ -100,7 +117,7 @@ def patch_upload(
         if dry_run:
             return result, None
         mm6 = TriggerBanks(project.root).is_mm6
-        output = out_dir / (Path(filename).name if mm6 else f"{stem}_midi.mad")
+        output = out_dir / (Path(filename).name if mm6 else f"{patched_stem(stem)}.mad")
         out_dir.mkdir(parents=True, exist_ok=True)
         partial = output.with_name(output.name + ".part")
         project.save(partial)
@@ -117,7 +134,7 @@ def patch_upload(
         result = patch_show(project, show, lock_path, **options)
         if dry_run:
             return result, None
-        patched = Path(tmp) / "out" / f"{name}_midi.madproject"
+        patched = Path(tmp) / "out" / f"{patched_stem(name)}.madproject"
         patched.parent.mkdir()
         save_project(project, folder, patched,
                      project_path=_beside(to_plain(original_path) if original_path else None, patched.name))

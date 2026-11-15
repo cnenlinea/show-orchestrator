@@ -104,6 +104,9 @@
   .checks { display: flex; flex-wrap: wrap; gap: 4px 14px; }
   .checks label { gap: 4px; color: var(--text); }
   .checks label.error { color: var(--error); }
+  #lighting p, #mad-stored p { margin: 4px 0; }
+  #lighting ul, #mad-previous ul { margin: 4px 0; padding-left: 18px; }
+  #lighting li.error { color: var(--error); }
 </style>
 </head>
 <body>
@@ -167,11 +170,18 @@
       <textarea id="editor" spellcheck="false" wrap="off"></textarea>
     </section>
     <section id="view-madmapper" hidden>
-      <h2>Patch a MadMapper project</h2>
-      <p class="muted">Every cue (in MadMapper 6, every timeline) named like an effect gets a MIDI trigger on that effect's note and channel: the notes the generated MIDI files play. You get a patched copy to download; the project you send is not changed. Save and close the project in MadMapper first.</p>
-      <p class="muted">Send a MadMapper 5 <code>.mad</code>, or a MadMapper 6 <code>.madproject</code> folder zipped (Finder: Compress). A MadMapper 6 folder can hold its media, so to send less, send only the <code>.mad</code> inside it (Show Package Contents). The patched <code>.mad</code> comes back under the same name: put it into a copy of the folder in place of the original.</p>
+      <h2>The show's MadMapper project</h2>
+      <p class="muted">The show keeps one MadMapper project: patching and the bundle start from it. After changing it in MadMapper, upload it again (the patched copy is fine: patching again sets its MIDI triggers and keeps everything else). The last 5 projects it replaced are kept.</p>
+      <p class="muted">Upload a MadMapper 5 <code>.mad</code>, or a MadMapper 6 <code>.madproject</code> folder zipped (Finder: Compress). A MadMapper 6 folder can hold its media, so to send less, upload only the <code>.mad</code> inside it (Show Package Contents); its patched copy comes back under the same name, to put into a copy of the folder in place of the original.</p>
+      <div id="mad-stored" class="muted"></div>
       <div class="build-form mad-form">
-        <label>Project <input id="mad-project" type="file" accept=".mad,.zip"></label>
+        <label>Upload a new one <input id="mad-project" type="file" accept=".mad,.zip"></label>
+        <p id="mad-upload-status" class="status"></p>
+        <details id="mad-previous" hidden><summary></summary><ul></ul></details>
+      </div>
+      <h2>Patch it</h2>
+      <p class="muted">Every cue (in MadMapper 6, every timeline) named like an effect gets a MIDI trigger on that effect's note and channel: the notes the generated MIDI files play. You get a patched copy to download; the show's project is not changed. Save and close the project in MadMapper first.</p>
+      <div class="build-form mad-form">
         <label>Effect types <span id="mad-types" class="pair"></span></label>
         <label title="The MadMapper MIDI input the triggers listen on">MIDI input <input id="mad-device" placeholder="all (any input)"></label>
         <label title="Fade each cue in over the silence that follows it in its song's audio, so the picture arrives with the music">Fades from the audio
@@ -214,10 +224,15 @@
         <label>Use note lock <input id="note-lock" type="checkbox" checked></label>
         <div class="pair">
           <button id="build" class="primary grow">Build</button>
-          <button id="bundle" class="grow" title="A zip with the REAPER project, the MIDI files, the show file and all its media, ready to open on another machine">Download bundle</button>
+          <button id="bundle" class="grow" title="A zip with the REAPER project, the MIDI files, the show file and all its media, the lighting and the patched MadMapper project, ready to open on another machine">Download bundle</button>
         </div>
+        <p class="muted">Bundle: extract the whole zip, then open the <code>.rpp</code> inside it. Opened from inside the zip, REAPER finds none of its media.</p>
       </div>
       <p id="status" class="status"></p>
+    </div>
+    <div>
+      <h2>Lighting</h2>
+      <div id="lighting"></div>
     </div>
     <div>
       <h2>Add files</h2>
@@ -399,6 +414,8 @@ async function loadShow() {
     renderShow(show);
     showBuildSettings(show);
     showMadSettings(show);
+    loadMadProject();
+    loadLighting();
   } catch (err) {
     assigned = new Map();
     $("summary").textContent = "";
@@ -446,7 +463,8 @@ async function downloadBundle() {
   $("bundle").disabled = true;
   try {
     const result = await api("/api/bundle", buildOptions());
-    setStatus(`Downloading ${(result.size / 1e6).toFixed(1)} MB…`, "ok");
+    const warnings = (result.warnings || []).map((text) => `\n⚠ ${text}`).join("");
+    setStatus(`Downloading ${(result.size / 1e6).toFixed(1)} MB…${warnings}`, warnings ? "error" : "ok");
     // a download link rather than navigating, so the page (and any unsaved edit) stays
     h("a", {href: result.download, download: ""}).click();
   } catch (err) {
@@ -560,15 +578,119 @@ function renderMadReport(result) {
   $("mad-report").replaceChildren(...parts);
 }
 
-async function patchMadMapper(dryRun) {
-  const project = $("mad-project").files[0];
-  if (!project) {
-    setStatus("Choose the MadMapper project first.", "error", "mad-status");
+function sizeText(bytes) {
+  return bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1e3))} kB`;
+}
+
+function whenText(iso) {
+  return iso ? new Date(iso).toLocaleString([], {dateStyle: "medium", timeStyle: "short"}) : "";
+}
+
+function madDownload(previous) {
+  const query = new URLSearchParams({show: $("show-select").value, ...(previous ? {previous} : {})});
+  return `/api/madmapper/project/download?${query}`;
+}
+
+let madProject = null;
+
+function renderMadProject({project, previous}) {
+  madProject = project;
+  $("mad-stored").replaceChildren(project
+    ? h("p", {},
+        h("strong", {textContent: project.name}),
+        ` · ${sizeText(project.size)} · uploaded ${whenText(project.uploaded_at)}${project.by ? ` by ${project.by}` : ""} · `,
+        h("a", {href: madDownload(), textContent: "Download it as uploaded"}))
+    : h("p", {textContent: "No MadMapper project yet: upload one below."}));
+  $("mad-previous").hidden = !previous.length;
+  $("mad-previous").querySelector("summary").textContent = `Projects it replaced (${previous.length})`;
+  $("mad-previous").querySelector("ul").replaceChildren(...previous.map((old) => h("li", {},
+    h("a", {href: madDownload(old.id), textContent: old.name}),
+    ` · ${sizeText(old.size)} · uploaded ${whenText(old.uploaded_at)}${old.by ? ` by ${old.by}` : ""}`)));
+  for (const id of ["mad-preview", "mad-patch"]) $(id).disabled = !project;
+}
+
+async function loadMadProject() {
+  try {
+    renderMadProject(await api(`/api/madmapper/project?show=${encodeURIComponent($("show-select").value)}`));
+  } catch (err) {
+    setStatus(err.message, "error", "mad-upload-status");
+  }
+}
+
+async function uploadMadProject() {
+  const file = $("mad-project").files[0];
+  if (!file) return;
+  if (madProject && !confirm(`Replace ${madProject.name} with ${file.name}? (${madProject.name} is kept with the earlier ones.)`)) {
+    $("mad-project").value = "";
     return;
   }
   const form = new FormData();
   form.append("show", $("show-select").value);
-  form.append("project", project);
+  form.append("project", file);
+  try {
+    const {status, data} = await postForm("/api/madmapper/project", form, "mad-upload-status");
+    if (status >= 400) throw new Error(data.error || `Server error (${status})`);
+    renderMadProject(data);
+    $("mad-report").replaceChildren();
+    setStatus(`Kept ${data.project.name}: patch it below.`, "ok", "mad-upload-status");
+  } catch (err) {
+    setStatus(err.message, "error", "mad-upload-status");
+  } finally {
+    $("mad-project").value = "";
+  }
+}
+
+// ---- Lighting: the QLC+ workspace and the lights' MIDI files ReQLC publishes for the show.
+function showUrl(file, rest) {
+  return `/api/shows/${file.split("/").map(encodeURIComponent).join("/")}/${rest}`;
+}
+
+function renderLighting(state) {
+  const parts = [];
+  const manifest = state.manifest;
+  if (state.workspace) {
+    const from = manifest ? [manifest.source === "reqlc" ? "ReQLC" : manifest.source, manifest.show,
+      manifest.version != null ? `version ${manifest.version}` : null].filter(Boolean).join(" ") : "";
+    parts.push(h("p", {},
+      h("a", {href: showUrl($("show-select").value, "lighting/workspace"), textContent: state.workspace.name}),
+      ` · ${sizeText(state.workspace.size)}${state.fixtures.length ? ` · ${state.fixtures.length} fixture definitions` : ""}`),
+      manifest ? h("p", {className: "muted", textContent:
+        `${from ? `From ${from}, p` : "P"}ublished ${whenText(manifest.published_at)}${manifest.published_by ? ` by ${manifest.published_by}` : ""}`}) : null);
+  } else {
+    parts.push(h("p", {className: "muted", textContent: "No QLC+ workspace yet. ReQLC publishes it here with the lights' MIDI files."}));
+  }
+  if (state.midi.length) {
+    const missing = state.midi.filter((m) => !m.present);
+    parts.push(h("details", {open: missing.length > 0},
+      h("summary", {textContent: `MIDI the show plays: ${state.midi.length - missing.length} of ${state.midi.length} present`}),
+      h("ul", {}, ...state.midi.map((m) => h("li", {className: m.present ? "" : "error",
+        textContent: `${m.name} (${m.songs.join(", ")})${m.present ? "" : " — missing"}`})))));
+  }
+  if (state.unused_midi.length) {
+    parts.push(h("details", {},
+      h("summary", {textContent: `Published MIDI the show doesn't play (${state.unused_midi.length})`}),
+      h("p", {className: "muted", textContent: `In ${state.home}/lighting/midi/: add them to a song as an extra track to play them.`}),
+      h("ul", {}, ...state.unused_midi.map((m) => h("li", {textContent: m.name})))));
+  }
+  $("lighting").replaceChildren(...parts);
+}
+
+async function loadLighting() {
+  const file = $("show-select").value;
+  try {
+    renderLighting(await api(showUrl(file, "lighting")));
+  } catch (err) {
+    $("lighting").replaceChildren(h("p", {className: "status error", textContent: err.message}));
+  }
+}
+
+async function patchMadMapper(dryRun) {
+  if (!madProject) {
+    setStatus("Upload the show's MadMapper project first.", "error", "mad-status");
+    return;
+  }
+  const form = new FormData();
+  form.append("show", $("show-select").value);
   for (const box of $("mad-types").querySelectorAll("input:checked")) form.append("types", box.value);
   form.append("device", $("mad-device").value);
   form.append("fades_from_audio", $("mad-fades-audio").value);
@@ -591,7 +713,7 @@ async function patchMadMapper(dryRun) {
   } catch (err) {
     setStatus(err.message, "error", "mad-status");
   } finally {
-    for (const id of ["mad-preview", "mad-patch"]) $(id).disabled = false;
+    for (const id of ["mad-preview", "mad-patch"]) $(id).disabled = !madProject;
   }
 }
 
@@ -1248,7 +1370,7 @@ $("bundle").onclick = downloadBundle;
 $("upload").onchange = uploadFiles;
 $("mad-preview").onclick = () => patchMadMapper(true);
 $("mad-patch").onclick = () => patchMadMapper(false);
-$("mad-project").onchange = () => { $("mad-report").replaceChildren(); setStatus("", "", "mad-status"); };
+$("mad-project").onchange = uploadMadProject;
 
 (async () => {
   await loadShows();

@@ -13,6 +13,7 @@ Settings come from the environment, then this repository's .env, then SauronsEye
     orchestrator_users      "name:password,name:password"  -> SHOW_ORCHESTRATOR_USERS
     orchestrator_password   one password, user "show"       -> SHOW_ORCHESTRATOR_PASSWORD
                             (falls back to replay_password, the SauronsEye replay's)
+    orchestrator_tokens     "reqlc:<token>": programs that publish lighting and read media -> SHOW_ORCHESTRATOR_TOKENS
 `up` refuses to start the container without a login unless given --open.
 
 `sync` uploads what the Dockerfile copies (the files .dockerignore lets through, shows and their media included)
@@ -256,6 +257,8 @@ def login_env(conf: dict[str, str]) -> list[str]:
         password = conf["replay_password"]
     if password:
         env.append(f"SHOW_ORCHESTRATOR_PASSWORD={password}")
+    if conf.get("orchestrator_tokens"):  # "reqlc:<token>": programs that publish lighting and read media
+        env.append(f"SHOW_ORCHESTRATOR_TOKENS={conf['orchestrator_tokens']}")
     return env
 
 

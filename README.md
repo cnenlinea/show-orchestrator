@@ -107,13 +107,16 @@ Fields that are missing or malformed are outlined in red, and saving (button or 
 
 ```
 musical_2026/
+  READ ME FIRST.txt                         how to open it
   musical_2026.rpp                          open this in REAPER
   *.mid                                     the generated cues (and split MIDI pieces)
   shows/musical_2026/musical_2026.yaml      the show file, its .notes.lock and included files
   shows/musical_2026/media/...              and every media file, at the paths the show gives
+  shows/musical_2026/lighting/...           the QLC+ workspace and fixtures ReQLC published (see Lighting below)
+  madmapper/<project>_midi.mad              the show's MadMapper project, patched to the show's notes
 ```
 
-The project references the media at those paths, relative to its own folder, so each file is stored once. Unzip the bundle and open the `.rpp`. The folder is also a show-orchestrator root: run `python <repo>/main.py shows/musical_2026/musical_2026.yaml --orchestrate reaper` inside it to rebuild, or point `madmapper_patch.py` at the same show file. A show whose media lies outside the project root (an absolute path elsewhere) can't be bundled: move the media under `shows/` first. The latest bundle of each show is kept in `build/bundles/`.
+The project references the media at those paths, relative to its own folder, so each file is stored once. **Extract the whole zip first**, then open the `.rpp` from the extracted folder: opened straight from inside the zip, REAPER gets the project alone and reports every file as missing. The MadMapper project is patched as the bundle is made, with the show's `madmapper:` settings; if it won't patch (say, a fade names a cue the project doesn't have), the bundle holds it as uploaded and says so. The folder is also a show-orchestrator root: run `python <repo>/main.py shows/musical_2026/musical_2026.yaml --orchestrate reaper` inside it to rebuild, or point `madmapper_patch.py` at the same show file. A show whose media lies outside the project root (an absolute path elsewhere) can't be bundled: move the media under `shows/` first. The latest bundle of each show is kept in `build/bundles/`.
 
 **Add files** uploads files into the selected show's folders. Audio and MIDI files go into its `media/` folder (for a show in the root, `shows/media/`), and a `.csv` or `.yaml` (such as a light-show-simulator lights timeline to `include`) goes next to the show file. A file with the same name is replaced only after you confirm. Uploads can be up to 2 GB, but a proxy in front of the server may allow less: Cloudflare's limit is 100 MB per request.
 
@@ -126,6 +129,7 @@ With neither variable below set, the web UI is open (as on the show machine, whe
 | `SHOW_ORCHESTRATOR_USERS` | Named users: `name:password,name:password` |
 | `SHOW_ORCHESTRATOR_PASSWORD` | One password, for the user `show` |
 | `SHOW_ORCHESTRATOR_SECRET` | Optional: signs the login cookie. By default it's derived from the users, so a restart keeps everyone logged in and changing a password logs everyone out |
+| `SHOW_ORCHESTRATOR_TOKENS` | Optional: `name:token` pairs for programs (ReQLC), which may use only the lighting and media routes (see Lighting from ReQLC) |
 
 A browser logs in at `/login` and stays logged in for 30 days (**Log out** in the header). Scripts can send HTTP basic auth to the `/api/` routes instead. Without a login the API answers 401.
 
@@ -143,7 +147,7 @@ python tools/arcane_deploy.py deploy --show shows/musical_2026/musical_2026.yaml
 
 `--show` (repeatable) sends only the named shows, and of each only what it uses: the show file, its note lock, included files and referenced media. Unused files (like a 241 MB video next to the show) stay home. Without `--show`, all of `shows/` goes. The script warns about any file over 95 MB, since Cloudflare refuses requests over 100 MB.
 
-It reads `arcane_server`, `arcane_api` (an Arcane API key) and the login (`orchestrator_users`, or `orchestrator_password`; otherwise SauronsEye's `replay_password`) from the environment, this repository's `.env`, or `H:\SauronsEye\.env`, in that order. It won't start the container without a login unless given `--open`. On a host with Docker Compose, `docker compose up -d --build` with [compose.yaml](compose.yaml) does the same.
+It reads `arcane_server`, `arcane_api` (an Arcane API key), the login (`orchestrator_users`, or `orchestrator_password`; otherwise SauronsEye's `replay_password`) and the program tokens (`orchestrator_tokens`) from the environment, this repository's `.env`, or `H:\SauronsEye\.env`, in that order. It won't start the container without a login unless given `--open`. On a host with Docker Compose, `docker compose up -d --build` with [compose.yaml](compose.yaml) does the same.
 
 ### Note mapper GUI
 
@@ -178,18 +182,20 @@ Instead of mapping every cue's MIDI trigger by hand in MadMapper, this writes th
 | `--dry-run` | Print the report without saving |
 | `--no-note-lock` | Ignore the note lock file |
 
-**In the web UI**, the **MadMapper** tab does the same for the selected show, with the same options, and works on a server. **Preview** shows the report without saving anything, and **Patch & download** also gives you the patched copy. The project you send is never changed. You can send:
+**In the web UI**, the **MadMapper** tab does the same for the selected show, with the same options, and works on a server. Each show keeps its own MadMapper project (in `<show folder>/madmapper/`): upload it once, and **Preview** and **Patch & download** work from it, as does **Download bundle**. When the project changes in MadMapper, upload it again; the patched copy is fine, since patching again replaces its note triggers and keeps everything else (and its name doesn't grow another `_midi`). The last 5 projects it replaced are kept and can be downloaded. Preview shows the report without saving anything; Patch & download gives you the patched copy, and the show's project is never changed. A project can be:
 
 - a MadMapper 5 `.mad`. It comes back as `<name>_midi.mad`.
 - a MadMapper 6 `.madproject` folder, zipped (Finder: Compress). It comes back as `<name>_midi.madproject.zip`, made the way the CLI makes the folder, with its `projectPath` pointing next to the original.
 - just the `.mad` from inside a MadMapper 6 folder (Finder: Show Package Contents), to avoid uploading the media the folder holds. It comes back under the same name: put it into a copy of the folder in place of the original `.mad`.
 
-The API is `POST /api/madmapper`, a multipart form:
+The show's project: `GET /api/madmapper/project?show=` (its name, size, who uploaded it and when, and the ones it replaced), `POST /api/madmapper/project` (multipart `show`, `project`: checked, then kept), and `GET /api/madmapper/project/download?show=[&previous=<id>]`.
+
+Patching is `POST /api/madmapper`, a multipart form:
 
 | Field | Purpose |
 | --- | --- |
 | `show` | The show file, as `/api/shows` lists it |
-| `project` | The `.mad` or `.zip` |
+| `project` | Optional: a `.mad` or `.zip` to patch instead of the show's project. Once it patches it becomes the show's project (not with `dry_run`) |
 | `types` | Effect type to map; repeat for several (default `projection`) |
 | `device` | MadMapper MIDI input (default `all`) |
 | `fades_from_audio` | `on`, `off`, or empty for the show's setting |
@@ -201,6 +207,22 @@ The API is `POST /api/madmapper`, a multipart form:
 It answers with the report as JSON. Unless it was a dry run, the report includes a `download` URL for the patched copy (`GET /api/madmapper/<file>`).
 
 MadMapper names notes from `C-2` = 0 (so note 60 is `C3`) and numbers channels from 1, so effect channel 0 shows up as `Midi 1`. The `.mad` reader/writer is [show_orchestrator/madfile.py](show_orchestrator/madfile.py); a project loaded and saved unchanged comes back byte-for-byte identical.
+
+### Lighting from ReQLC
+
+ReQLC designs the lights; show-orchestrator keeps what it publishes so a show's bundle has everything. A publish is a complete set, the QLC+ workspace and the lights' MIDI files together, since the MIDI notes fire the workspace's Virtual Console buttons. The web UI's **Lighting** panel shows what the show has: the workspace (to download), where it came from, and which of the MIDI files the show plays are present.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/shows/<show>/lighting` | The workspace, fixtures, every MIDI file the show plays (path, songs, present or not, SHA-256), published MIDI it doesn't play, and the last publish's manifest |
+| `PUT /api/shows/<show>/lighting` | Publish, multipart: `workspace` (one `.qxw`), `fixture` (`.qxf`, any number), `midi` (`.mid`, any number), `manifest` (JSON, e.g. `{"source": "reqlc", "show": "me-sostendras", "version": 14, "by": "…"}`), `dry_run=1` to only report |
+| `GET /api/shows/<show>/lighting/workspace` | The workspace, to download |
+| `GET /api/shows/<show>/media` | The media the show plays, song by song (its file and extra tracks) |
+| `GET /api/shows/<show>/media/file?path=` | One of those files, e.g. a song's audio to cue lights on |
+
+`<show>` is the show file as `/api/shows` lists it, or just its name (`musical_2026`) when that is unique. A published MIDI file named like one the show plays (`MS 3 Tap.mid`) replaces it where the show has it (`shows/musical_2026/luces_midi/MS 3 Tap.mid`), so the show file needn't change. The reply lists each file as `new`, `changed`, `unchanged` or `unused` (published, but the show doesn't play it: kept in `lighting/midi/`), the workspace's and fixtures' status, fixtures removed, and the MIDI files the show plays that weren't sent (`missing`). Everything is checked before anything is written (the workspace and fixtures must be QLC+ XML, the MIDI files must read as MIDI); the set a publish replaces, with the show's MIDI files it overwrote, is kept in `lighting/.previous/`.
+
+Programs use a token rather than a password: set `SHOW_ORCHESTRATOR_TOKENS` to `name:token` pairs (`reqlc:<long random string>`) and send `Authorization: Bearer <token>`. A token opens these routes only; people logged in can use them too. The deploy script passes `orchestrator_tokens` from the `.env` on.
 
 ### MadMapper scene scaffolding
 
@@ -379,7 +401,8 @@ show_orchestrator/
   madbanks.py                where cues/timelines live in each MadMapper version
   madmapper.py               effects → MadMapper cue MIDI triggers (patch_show: all of madmapper_patch.py)
   madupload.py               patch an uploaded .mad or zipped .madproject (the web UI's MadMapper tab)
-  bundle.py                  a show as one zip: REAPER project, MIDI, show files, media
+  bundle.py                  a show as one zip: REAPER project, MIDI, show files, media, lighting, MadMapper
+  showfiles.py               a show's own MadMapper project and its lighting (QLC+ workspace, MIDI) from ReQLC
   madscenes.py               scenes → MadMapper groups, quads, cues/timelines
   audio.py                   when a song becomes audible (fades from silence)
   backends/reaper.py         Show + .mid files → .rpp (reathon)
