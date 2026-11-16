@@ -34,8 +34,18 @@ def validate_duration_value(value: float | str) -> float | str:
     return value
 
 
+def validate_cue_duration(value: float | str) -> float | str:
+    # A cue is a MIDI note from its timestamp to timestamp + duration. With no length, note_on and note_off land
+    # on the same tick and the REAPER item is 0 s long, so REAPER sends nothing and the cue silently never fires.
+    if to_seconds(value) <= 0:
+        raise ValueError("Cue duration must be greater than 0 (a 0-length cue never fires); "
+                         "leave it out for the 0.1 s default")
+    return value
+
+
 Timestamp = Annotated[float | str, AfterValidator(validate_timestamp_value)]
 Duration = Annotated[float | str, AfterValidator(validate_duration_value)]
+CueDuration = Annotated[Duration, AfterValidator(validate_cue_duration)]
 
 
 class EffectType(StrEnum):
@@ -55,7 +65,7 @@ class MidiEvent(BaseModel):
 class Event(BaseModel):
     timestamp: Timestamp
     effect_id: str
-    duration: Duration | None = None
+    duration: CueDuration | None = None
 
     @property
     def timestamp_seconds(self) -> float:

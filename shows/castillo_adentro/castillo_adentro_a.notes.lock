@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "effects": {
+    "homeassistant": {
+      "Shutter Close": {
+        "note": 3,
+        "channel": 3
+      },
+      "Shutter Close/Screen Up": {
+        "note": 1,
+        "channel": 3
+      },
+      "Shutter Open": {
+        "note": 4,
+        "channel": 3
+      },
+      "Shutter Open/Screen Down": {
+        "note": 2,
+        "channel": 3
+      }
+    },
+    "projection": {
+      "AbismoAgua": {
+        "note": 33,
+        "channel": 0
+      },
+      "AbismoLava": {
+        "note": 21,
+        "channel": 0
+      },
+      "AsambleaReal": {
+        "note": 4,
+        "channel": 0
+      },
+      "BanderinQuemad": {
+        "note": 18,
+        "channel": 0
+      },
+      "Blackout": {
+        "note": 1,
+        "channel": 0
+      },
+      "Desenfreno": {
+        "note": 13,
+        "channel": 0
+      },
+      "Dia1": {
+        "note": 26,
+        "channel": 0
+      },
+      "Dia2": {
+        "note": 28,
+        "channel": 0
+      },
+      "Dia3": {
+        "note": 30,
+        "channel": 0
+      },
+      "Ending": {
+        "note": 34,
+        "channel": 0
+      },
+      "Espiral": {
+        "note": 9,
+        "channel": 0
+      },
+      "EspiralOff": {
+        "note": 11,
+        "channel": 0
+      },
+      "Fenomenales": {
+        "note": 12,
+        "channel": 0
+      },
+      "Lava": {
+        "note": 15,
+        "channel": 0
+      },
+      "LavaMax": {
+        "note": 16,
+        "channel": 0
+      },
+      "LavaRocas": {
+        "note": 17,
+        "channel": 0
+      },
+      "Munecas": {
+        "note": 20,
+        "channel": 0
+      },
+      "NoLava": {
+        "note": 19,
+        "channel": 0
+      },
+      "Noche0": {
+        "note": 25,
+        "channel": 0
+      },
+      "Noche1": {
+        "note": 27,
+        "channel": 0
+      },
+      "Noche2": {
+        "note": 29,
+        "channel": 0
+      },
+      "Obertura": {
+        "note": 3,
+        "channel": 0
+      },
+      "PayasosEscenar": {
+        "note": 5,
+        "channel": 0
+      },
+      "PuertaAbajo": {
+        "note": 22,
+        "channel": 0
+      },
+      "PuertaArriba": {
+        "note": 23,
+        "channel": 0
+      },
+      "PuntaAbajo": {
+        "note": 32,
+        "channel": 0
+      },
+      "PuntaNoShake": {
+        "note": 24,
+        "channel": 0
+      },
+      "PuntaShake": {
+        "note": 31,
+        "channel": 0
+      },
+      "RocasNoTiembla": {
+        "note": 8,
+        "channel": 0
+      },
+      "RocasTiemblan": {
+        "note": 7,
+        "channel": 0
+      },
+      "Tambores": {
+        "note": 2,
+        "channel": 0
+      },
+      "ValleRocasMin": {
+        "note": 6,
+        "channel": 0
+      },
+      "VegeOscura": {
+        "note": 10,
+        "channel": 0
+      },
+      "VegeQuemada": {
+        "note": 14,
+        "channel": 0
+      }
+    }
+  }
+}

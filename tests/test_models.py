@@ -48,6 +48,17 @@ def test_event_rejects_invalid_duration():
         Event(timestamp="0:00", effect_id="fx", duration="abc")
 
 
+@pytest.mark.parametrize("duration", [0, 0.0, "0", "0:00", "0:00.0", "00:00"])
+def test_event_rejects_zero_duration(duration):
+    # A 0-length cue builds a 0-length note in a 0-length REAPER item, which REAPER never plays.
+    with pytest.raises(ValidationError, match="greater than 0"):
+        Event(timestamp="0:00", effect_id="fx", duration=duration)
+
+
+def test_event_accepts_short_duration():
+    assert Event(timestamp="0:00", effect_id="fx", duration="0:00.1").duration_seconds == pytest.approx(0.1)
+
+
 def test_extra_audio_track_seconds():
     extra = ExtraAudioTrack(name="x", file_path="x.mid", duration="1:00", timestamp="0:30")
     assert extra.duration_seconds == 60.0
