@@ -66,6 +66,7 @@
         <p class="status error">This show does not load: {{ show.error }}</p>
         {% else %}
         <p>{{ show.songs }} song{{ "" if show.songs == 1 else "s" }} · about {{ show.minutes }} min</p>
+        {% if show.updated %}<p class="updated" title="The last change to the show or the audio and MIDI it plays">Updated <time datetime="{{ show.updated }}">{{ show.updated }}</time></p>{% endif %}
         {% endif %}
         <p class="status" id="status-{{ loop.index }}"></p>
       </div>
@@ -102,6 +103,20 @@ async function download(button) {
   }
 }
 for (const button of document.querySelectorAll("button[data-file]")) button.onclick = () => download(button);
+
+// "Updated" in the viewer's own time, and how long ago
+const AGO = new Intl.RelativeTimeFormat(undefined, {numeric: "auto"});
+function ago(date) {
+  const minutes = Math.round((date - Date.now()) / 60000);
+  if (Math.abs(minutes) < 60) return AGO.format(minutes, "minute");
+  const hours = Math.round(minutes / 60);
+  if (Math.abs(hours) < 24) return AGO.format(hours, "hour");
+  return AGO.format(Math.round(hours / 24), "day");
+}
+for (const time of document.querySelectorAll("time[datetime]")) {
+  const date = new Date(time.dateTime);
+  time.textContent = `${date.toLocaleString([], {dateStyle: "medium", timeStyle: "short"})} (${ago(date)})`;
+}
 </script>
 </body>
 </html>

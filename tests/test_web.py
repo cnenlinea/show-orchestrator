@@ -675,3 +675,18 @@ def test_a_user_can_start_on_another_page(root):
     # only pages on this site
     assert homes_from_env({"SHOW_ORCHESTRATOR_HOMES": "sonido:/reaper;x://evil.example;y:https://evil"}) == {
         "sonido": "/reaper"}
+
+
+def test_reaper_page_says_when_each_show_was_last_updated(client, root, media_show):
+    import os
+    import re
+
+    def updated():
+        html = client.get("/reaper").data.decode()
+        return dict(re.findall(r'<h2>([^<]*)</h2>.*?<time datetime="([^"]+)"', html, re.S))
+
+    for path in (root / "shows/demo/withmedia.csv", root / "shows/demo/media/song.mp3"):
+        os.utime(path, (1_700_000_000, 1_700_000_000))  # 2023-11-14T22:13:20Z
+    assert updated()["Withmedia"] == "2023-11-14T22:13:20Z"
+    os.utime(root / "shows/demo/media/song.mp3", (1_800_000_000, 1_800_000_000))  # its audio replaced later
+    assert updated()["Withmedia"] == "2027-01-15T08:00:00Z"

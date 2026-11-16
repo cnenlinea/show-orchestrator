@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import mido
@@ -236,6 +236,20 @@ def show_title(file: str | Path, show: Show | None = None) -> str:
         return show.title.strip()
     words = [word for word in re.split(r"[_\-\s]+", Path(file).stem) if word]
     return " ".join(word[:1].upper() + word[1:] for word in words) or Path(file).stem
+
+
+def show_updated(root: Path, file: str, show: Show) -> str | None:
+    """When the files a show's REAPER project is made from last changed here (the show file, its note lock, included
+    files, the media it plays), as UTC ISO 8601; None when none can be found."""
+    path = root / file
+    candidates = [path, lock_path_for(path)]
+    candidates += [Path(include) if Path(include).is_absolute() else path.parent / include for include in show.include or []]
+    for track in show.audio_tracks:
+        candidates += [root / p for p in [track.file_path, *(e.file_path for e in track.extra_tracks or [])] if p]
+    times = [candidate.stat().st_mtime for candidate in candidates if candidate.is_file()]
+    if not times:
+        return None
+    return datetime.fromtimestamp(max(times), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def upload_folder(show: str) -> Path:
@@ -605,7 +619,7 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
                 continue
             seconds = sum(track.duration_seconds for track in show.audio_tracks)
             shows.append({"file": name, "title": show_title(name, show), "songs": len(show.audio_tracks),
-                          "minutes": round(seconds / 60)})
+                          "minutes": round(seconds / 60), "updated": show_updated(root, name, show)})
         # the same name twice (musical.yaml and musical.csv): tell them apart by type, then by folder
         for tell in (lambda f: Path(f).suffix[1:].upper(), lambda f: Path(f).parent.name or "root"):
             counts: dict[str, int] = {}
