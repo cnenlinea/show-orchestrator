@@ -92,7 +92,10 @@ async function download(button) {
     const data = await response.json().catch(() => ({error: `Server error (${response.status})`}));
     if (!response.ok) throw new Error(data.error || `Server error (${response.status})`);
     say(`Downloading ${(data.size / 1e6).toFixed(0)} MB… Extract the whole zip, then open the .rpp inside.`, "ok");
-    const link = Object.assign(document.createElement("a"), {href: data.download, download: ""});
+    // named after the show's last update, in this viewer's time like "Updated" above
+    const href = new URL(data.download, location.href);
+    if (data.updated) href.searchParams.set("save_as", `${data.stem}_${stamp(new Date(data.updated))}.zip`);
+    const link = Object.assign(document.createElement("a"), {href: href.toString(), download: ""});
     document.body.append(link);
     link.click();
     link.remove();
@@ -103,6 +106,12 @@ async function download(button) {
   }
 }
 for (const button of document.querySelectorAll("button[data-file]")) button.onclick = () => download(button);
+
+// 2026-11-15_1945, local time: sorts by date and is a valid file name everywhere
+function stamp(date) {
+  const two = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}_${two(date.getHours())}${two(date.getMinutes())}`;
+}
 
 // "Updated" in the viewer's own time, and how long ago
 const AGO = new Intl.RelativeTimeFormat(undefined, {numeric: "auto"});

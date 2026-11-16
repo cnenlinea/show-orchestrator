@@ -1,3 +1,4 @@
+import re
 import shutil
 from pathlib import Path
 
@@ -642,8 +643,16 @@ def test_reaper_download_holds_only_what_reaper_needs(client, media_show):
 
     made = client.post("/api/reaper", json={"file": media_show})
     assert made.status_code == 200, made.get_json()
-    assert made.get_json()["download"].endswith("withmedia_reaper.zip")
-    with zipfile.ZipFile(io.BytesIO(client.get(made.get_json()["download"]).data)) as bundle:
+    reply = made.get_json()
+    assert reply["download"].startswith("/api/bundle/withmedia_reaper.zip?")
+    # named after the show's last update, as the downloads page shows it
+    assert re.fullmatch(r"withmedia_reaper_\d{4}-\d\d-\d\d_\d{4}UTC\.zip", reply["filename"]), reply
+    assert reply["stem"] == "withmedia_reaper" and reply["updated"].endswith("Z")
+    stamp = reply["updated"][:16].replace("T", "_").replace(":", "")
+    assert reply["filename"] == f"withmedia_reaper_{stamp}UTC.zip"
+    got = client.get(reply["download"])
+    assert reply["filename"] in got.headers["Content-Disposition"]
+    with zipfile.ZipFile(io.BytesIO(got.data)) as bundle:
         names = set(bundle.namelist())
         project = bundle.read("withmedia/withmedia.rpp").decode()
     assert "withmedia/shows/demo/media/song.mp3" in names
@@ -651,6 +660,18 @@ def test_reaper_download_holds_only_what_reaper_needs(client, media_show):
     assert any(name.endswith(".mid") and name.count("/") == 1 for name in names)
     # nothing but the project, its MIDI and its media
     assert all(name.endswith((".rpp", ".mid", ".mp3")) for name in names), names
+
+
+def test_a_bundle_is_saved_only_under_a_name_of_its_own(client, media_show):
+    client.post("/api/reaper", json={"file": media_show})
+    named = client.get("/api/bundle/withmedia_reaper.zip?save_as=withmedia_reaper_2026-11-15_1945.zip")
+    assert "withmedia_reaper_2026-11-15_1945.zip" in named.headers["Content-Disposition"]
+    for other in ("other_show.zip", "withmedia_reaper.exe"):
+        got = client.get("/api/bundle/withmedia_reaper.zip", query_string={"save_as": other})
+        assert got.headers["Content-Disposition"].endswith("filename=withmedia_reaper.zip"), other
+    foldered = client.get("/api/bundle/withmedia_reaper.zip", query_string={"save_as": "../../withmedia_reaper_x.zip"})
+    assert foldered.headers["Content-Disposition"].endswith("filename=withmedia_reaper_x.zip")  # no folders
+    assert "filename=withmedia_reaper.zip" in client.get("/api/bundle/withmedia_reaper.zip").headers["Content-Disposition"]
 
 
 def test_reaper_download_of_an_unknown_show(client):

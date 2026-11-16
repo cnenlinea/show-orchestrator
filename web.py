@@ -604,7 +604,12 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
 
     @app.get("/api/bundle/<name>")
     def download_bundle(name: str):
-        return send_from_directory(root / BUNDLE_DIR, name, as_attachment=True)
+        """A bundle, saved as save_as= when given: a name for the same bundle (its own name then more, e.g. a
+        timestamp), so a download can't pass for another file."""
+        save_as = upload_name(request.args.get("save_as"))
+        if not (save_as.startswith(Path(name).stem) and save_as.endswith(Path(name).suffix)):
+            save_as = name
+        return send_from_directory(root / BUNDLE_DIR, name, as_attachment=True, download_name=save_as)
 
     # --- the downloads page: each show and its REAPER project, for whoever runs the show
 
@@ -634,7 +639,10 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
     @app.post("/api/reaper")
     def reaper_bundle():
         """Only what REAPER needs to play a show (project, MIDI, the media it plays) as a zip, built with the
-        show's own settings (its gap and default routing), to download from /api/bundle/<name>."""
+        show's own settings (its gap and default routing), to download from /api/bundle/<name>.
+
+        The download is named after the show's last update (as the downloads page shows it), e.g.
+        musical_2026_reaper_2026-11-15_1945UTC.zip; `stem` and `updated` let a page name it in its own time."""
         file = show_file((request.get_json(silent=True) or {}).get("file"))
         if file is None:
             return error("Unknown show file", 404)
@@ -642,14 +650,21 @@ def create_app(root: Path, users: dict[str, str] | None = None, secret: str | No
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / f"{file.stem}_reaper.zip"
         partial = folder / f"{target.name}.{uuid.uuid4().hex[:8]}.part"
+        relative = file.relative_to(root)
         try:
             with open(partial, "wb") as out:
-                write_reaper_bundle(root, file.relative_to(root), out)
+                write_reaper_bundle(root, relative, out)
             partial.replace(target)
+            updated = show_updated(root, relative.as_posix(), Parser().load_show(file))
         except SHOW_ERRORS as exc:
             partial.unlink(missing_ok=True)
             return error(str(exc))
-        return jsonify(download=url_for("download_bundle", name=target.name), size=target.stat().st_size)
+        save_as = target.name
+        if updated:
+            stamp = datetime.strptime(updated, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d_%H%M")
+            save_as = f"{target.stem}_{stamp}UTC{target.suffix}"
+        return jsonify(download=url_for("download_bundle", name=target.name, save_as=save_as),
+                       size=target.stat().st_size, filename=save_as, stem=target.stem, updated=updated)
 
     def project_info(file: Path) -> dict:
         relative = file.relative_to(root)
